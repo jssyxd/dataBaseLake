@@ -1,0 +1,1942 @@
+"""Papermill-based notebook execution helpers.
+
+Provides:
+- run_notebook(): Execute a .py notebook via Papermill with parameter injection
+- get_overrides(): Load per-notebook overrides from tests/overrides.yaml
+- collect_chapter_notebooks(): Discover notebooks in chapter directories
+- get_tier() / current_test_tier(): Test-tier routing (per-commit / weekly / on-demand)
+- get_record_mode(): VCR cassette mode (consumed by Step 5)
+- unusable_parameters(): parameter names an override declares that the notebook
+  cannot receive (checked by tests/test_pm_helpers.py)
+
+NOTE: Notebooks live directly in chapter directories
+(e.g., 05_synthetic_data/01_timegan.py), NOT in code/ subdirs.
+
+overrides.yaml schema (per-notebook, all optional):
+    timeout: int (seconds, default 300)
+    parameters: dict (papermill -p overrides). Papermill injects these values in a
+        cell right after the notebook's ``# %% tags=["parameters"]`` cell, so
+        every name must be one the notebook reads below that point without first
+        overwriting it. Where the notebook assigns the name is not the test: an
+        assignment above the injection point is overridden. A name nothing reads
+        is an unused variable, and one that is overwritten first is gone; either
+        way the test runs at production scale while this file states a reduction.
+        ``unusable_parameters`` is the detector and tests/test_pm_helpers.py
+        fails the build on what it finds, with no allowlist.
+    research_preview: bool — default true. Chooses the TIER only; the isolated
+        workspace is injected either way, and there is deliberately no way to ask the
+        harness for the in-place production path. The harness runs a notebook that
+        declares both EXECUTION_TIER and WORKSPACE at the preview tier in a fresh
+        workspace,
+        because that pair means "this notebook can run self-contained at reduced
+        scale". That is exact for a notebook that WRITES at the tier it is given: a
+        model notebook fits something small and registers it into the workspace it
+        was handed, so it needs nothing else to be there. It is wrong for a notebook
+        that only READS at that tier - it is self-contained only if its producer ran
+        into the same workspace, and the per-notebook suite runs each notebook alone,
+        so it filters for preview rows nobody wrote and stops at its first cell. Set
+        this false for a reader, and it runs at its declared tier, in an isolated
+        workspace, against the canonical rows the fixture seeds - the third combination
+        `open_study`'s docstring names, "the same computation at full scale writing to an
+        isolated registry ... without being able to damage" the published one. Real
+        coverage rather than a skip. Do NOT instead seed preview-tier rows: that
+        fabricates predictions at a tier nothing fitted.
+    skip: bool — hard skip in uv-native run (Docker tests ignore)
+    skip_reason: str
+    requires_import: str | list[str]
+    requires_env: str | list[str] — environment variables the notebook cannot run
+        without (API keys, SEC identity). Skipped when any is unset or blank,
+        executed when they are all present. Prefer this over `skip: true` for a
+        missing capability: `skip` is unconditional, so a notebook marked that
+        way stays unexecuted even in the workflow that supplies the credential.
+    gpu: bool
+    long_running: bool
+    docker_env: str — informational (e.g., "benchmark")
+    kernel_python: str — interpreter to execute with, for a notebook whose
+        dependencies live in a venv other than the one running pytest (the
+        py312 image keeps tfcausalimpact in /opt/bsts on NumPy 1.x).
+    kernel_launcher: str — repo-relative launcher script for that interpreter.
+    tier: "per_commit" | "weekly" | "on_demand" — default "per_commit"
+        Per-commit runs the Tests workflow on every PR/push.
+        Weekly runs the weekly-external scheduled workflow (Step 2).
+        On_demand runs only on manual dispatch (GPU-only NBs).
+    reruns: int — flaky-retry count (consumed once pytest-rerunfailures lands,
+        Step 2). Default 0.
+    record_mode: "replay" | "rewrite" — VCR cassette mode (consumed by Step 5).
+        Default "replay".
+"""
+
+import ast
+import functools
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable, Iterable
+from pathlib import Path
+from typing import Any, NamedTuple
+
+import yaml
+
+REPO_ROOT = Path(__file__).parent.parent
+OVERRIDES_PATH = REPO_ROOT / "tests" / "overrides.yaml"
+
+# Every key an entry in that file may carry, each with a reader named beside it. The file
+# is plain YAML, so a key nothing reads is accepted in silence: `env:` was, and it reached
+# nothing, because `test_chapter_notebook` calls `run_notebook` without `extra_env`. A
+# reduction that arrives nowhere does not present as a broken reduction, it presents as an
+# expensive notebook - `12_gradient_boosting/08_shap_analysis` declared `MAX_SYMBOLS: 10`
+# against a 300 s per-cell timeout and trained on the full universe, and the cost read as
+# the notebook being slow.
+#
+# Adding a key here is the act of saying what reads it. `tests/test_overrides_schema.py`
+# fails on any key in the file that is not listed, and separately on any entry whose
+# parameter names do not reach papermill, which catches a new key of this shape without
+# waiting for this list to be updated.
+KNOWN_OVERRIDE_KEYS = frozenset(
+    {
+        "docker_env",  # pm_helpers.check_kernel_routing
+        "gpu",  # pm_helpers.gpu_skip_reason
+        "invocations",  # pm_helpers.invocations_for
+        "kernel_launcher",  # pm_helpers.check_kernel_routing
+        "kernel_python",  # pm_helpers.check_kernel_routing
+        "long_running",  # tests/conftest.py, marker application
+        "parameters",  # pm_helpers.sole_invocation -> papermill
+        "record_mode",  # pm_helpers.get_record_mode
+        "requires_env",  # pm_helpers.missing_required_env
+        "requires_import",  # tests/test_chapter_notebooks.py
+        "requires_stage",  # tests/test_case_studies.py
+        "research_preview",  # pm_helpers.injected_parameters
+        "reruns",  # pm_helpers.get_reruns
+        "skip",  # tests/test_chapter_notebooks.py
+        "skip_blocker",  # tests/skip_blockers.py
+        "skip_reason",  # tests/test_chapter_notebooks.py
+        "tier",  # pm_helpers.get_tier
+        "timeout",  # tests/test_chapter_notebooks.py -> run_notebook
+        # Free VRAM in whole GB a canonical run of this notebook needs before it may
+        # start. Read by the launcher outside this repo (agents/scripts/nb-run.sh,
+        # `needs_vram`), which is why no test here consumes it: the key is declared
+        # beside the notebook because the measurement belongs to the notebook, and a
+        # scheduling gate that lived in the runner alone had to guess from the model
+        # name. Nothing in CI reads it - CI has no card.
+        "vram_gb",  # agents/scripts/nb-run.sh needs_vram
+    }
+)
+
+STAGE_RE = re.compile(r"^(\d{2})([a-z]?)_")
+
+
+def stage_sort_key(path: Path) -> tuple[str, int, str]:
+    """Order lettered producer notebooks before the bare aggregate for a stage number."""
+    match = STAGE_RE.match(path.name)
+    if match is None:
+        return (path.name, 1, path.name)
+    number, letter = match.group(1), match.group(2)
+    return (number, 1 if not letter else 0, path.name)
+
+
+# Thread-pool caps for the papermill kernel.
+#
+# scikit-learn, NumPy's BLAS, numexpr and their dependencies each default to one
+# thread per core. A notebook kernel therefore opens ~24 threads per pool on this
+# box, and several suites run at once, so the pools oversubscribe the machine by
+# about an order of magnitude. OpenMP pools spin rather than block while they
+# wait, so the cost lands as wall-clock time inside whichever cell happens to be
+# running and reads as that cell timing out. Measured on
+# 11_ml_pipeline/02_regularization_paths: the ten-fit LASSO alpha grid took 761 s
+# for one fold unpinned and 0.90 s pinned, with identical iteration counts, so the
+# optimizer did identical work both times. End to end that notebook went from a
+# 300 s cell timeout to passing in 41 s.
+#
+# CI runners have few cores and lose nothing. A notebook that genuinely wants more
+# threads asks the library rather than the environment (LightGBM's num_threads and
+# torch.set_num_threads both win over these), or a caller raises them via
+# extra_env, which is applied after this table.
+KERNEL_THREAD_CAP = os.environ.get("ML4T_TEST_THREADS", "1")
+KERNEL_THREAD_CAPS = {
+    "OMP_NUM_THREADS": KERNEL_THREAD_CAP,
+    "OPENBLAS_NUM_THREADS": KERNEL_THREAD_CAP,
+    "MKL_NUM_THREADS": KERNEL_THREAD_CAP,
+    "NUMEXPR_NUM_THREADS": KERNEL_THREAD_CAP,
+}
+
+# Cache loaded overrides
+_overrides_cache: dict | None = None
+
+# ---------------------------------------------------------------------------
+# Test tier — controls when a notebook runs in CI.
+# Per-commit (default): every PR / push triggers the Tests workflow.
+# Weekly: only the scheduled weekly-external workflow (Mon 06:00 UTC).
+# On-demand: only manual workflow_dispatch (e.g., GPU-only Tier 3).
+# ---------------------------------------------------------------------------
+TIER_PER_COMMIT = "per_commit"
+TIER_WEEKLY = "weekly"
+TIER_ON_DEMAND = "on_demand"
+VALID_TIERS = frozenset({TIER_PER_COMMIT, TIER_WEEKLY, TIER_ON_DEMAND})
+
+# VCR cassette modes (Step 5: pytest-recording).
+RECORD_REPLAY = "replay"
+RECORD_REWRITE = "rewrite"
+VALID_RECORD_MODES = frozenset({RECORD_REPLAY, RECORD_REWRITE})
+
+
+def get_tier(overrides: dict) -> str:
+    """Return the test tier declared by overrides (default: per_commit)."""
+    tier = overrides.get("tier") or TIER_PER_COMMIT
+    if tier not in VALID_TIERS:
+        raise ValueError(
+            f"Invalid tier {tier!r} in overrides — must be one of {sorted(VALID_TIERS)}"
+        )
+    return tier
+
+
+def current_test_tier() -> str:
+    """Return the tier the current pytest run is targeting.
+
+    Read from ML4T_TEST_TIER env var; defaults to per_commit so existing
+    workflows that don't set it keep their current behavior (only NBs
+    without a tier key — i.e., tier=per_commit — execute).
+    """
+    tier = os.environ.get("ML4T_TEST_TIER") or TIER_PER_COMMIT
+    if tier not in VALID_TIERS:
+        raise ValueError(f"Invalid ML4T_TEST_TIER={tier!r} — must be one of {sorted(VALID_TIERS)}")
+    return tier
+
+
+def missing_required_env(overrides: dict) -> list[str]:
+    """Return the ``requires_env`` variables that are unset or blank.
+
+    An empty list means the notebook's credentials are all present and it must
+    execute. This is what keeps a credential-gated notebook honest in both
+    directions: it does not fail the per-commit run that has no secret, and it
+    does not silently stay skipped in the weekly run that does.
+    """
+    declared = overrides.get("requires_env")
+    if not declared:
+        return []
+    names = [declared] if isinstance(declared, str) else list(declared)
+    return [name for name in names if not (os.environ.get(name) or "").strip()]
+
+
+GPU_CAPABILITIES = ("torch", "lightgbm_cuda")
+
+
+# The message LightGBM raises when the build itself lacks CUDA, as opposed to when a build that
+# has it cannot get the card right now. Only the first is a property of the installation, and
+# only the first is a reason to skip: a busy 3090 is a reason to wait or to fail loudly, never to
+# report a notebook as needing hardware it has.
+_NO_CUDA_BUILD = "was not enabled in this build"
+
+
+@functools.lru_cache(maxsize=1)
+def _cuda_lightgbm_probe() -> str | None:
+    """None if a CUDA LightGBM fit works here, else why it did not.
+
+    Asked by fitting one stump rather than by reading a version or a build flag, because
+    LightGBM exposes no build-configuration attribute and the failure it produces is a
+    runtime `LightGBMError` out of `fit()`. Costs about 9ms on twenty rows, and is cached
+    so a session pays it once however many notebooks declare the capability.
+
+    The C library writes its `[LightGBM] [Fatal]` line straight to file descriptor 2, which
+    no Python-level redirect reaches, so the descriptor itself is pointed at the null device
+    for the duration of the probe. Descriptor 2 by number, not `sys.stderr.fileno()`: under
+    pytest's `--capture=sys` that attribute raises `UnsupportedOperation`, and under the
+    default fd capture it names the capture file rather than the stream the C library writes
+    to. A failure here is the answer, not an error to report.
+    """
+    try:
+        import lightgbm as lgb
+        import numpy as np
+    except ImportError:
+        return "lightgbm is not installed"
+    try:
+        saved = os.dup(2)
+    except OSError:  # no descriptor 2 to borrow; the noise is not worth failing over
+        saved = None
+    try:
+        with open(os.devnull, "w") as devnull:
+            if saved is not None:
+                os.dup2(devnull.fileno(), 2)
+            try:
+                lgb.train(
+                    {
+                        "objective": "binary",
+                        "device_type": "cuda",
+                        "verbose": -1,
+                        "num_leaves": 2,
+                        "min_data_in_leaf": 1,
+                    },
+                    lgb.Dataset(np.zeros((20, 2)), label=np.arange(20) % 2),
+                    num_boost_round=1,
+                )
+            except Exception as exc:  # noqa: BLE001 - the message is the answer
+                if _NO_CUDA_BUILD in str(exc):
+                    return "the installed LightGBM has no CUDA build"
+                return f"the CUDA LightGBM probe failed for another reason: {exc}"
+    finally:
+        if saved is not None:
+            os.dup2(saved, 2)
+            os.close(saved)
+    return None
+
+
+def gpu_skip_reason(overrides: dict) -> str | None:
+    """Why this notebook cannot run on this machine, or None if it can.
+
+    `gpu:` names the capability the notebook needs, not the fact that it wants a card.
+    The two in use are different things and are checked differently:
+
+    - ``torch`` - a CUDA device torch can see, which is what a `.to("cuda")` model needs.
+    - ``lightgbm_cuda`` - a LightGBM built with ``-DUSE_CUDA=1``, which is what
+      ``device_type="cuda"`` needs. The PyPI wheel this repo's lockfile resolves is not
+      one, so on a machine with an NVIDIA card and this repo's own environment, torch
+      reports CUDA and LightGBM still raises "CUDA Tree Learner was not enabled in this
+      build" from `fit()`. Checking torch for a LightGBM notebook let those four Ch19
+      notebooks run and fail rather than skip - ml4t/agent-workspace#862.
+
+    ``gpu: true`` is read as ``torch``, which is what it has always meant. A notebook needing
+    both writes a list - ``19_risk_management/07_drift_detection`` fits a LightGBM at
+    ``device_type="cuda"`` and separately reads ``torch.cuda.get_device_name`` - and it runs
+    only where every capability it names is present.
+    """
+    declared = overrides.get("gpu")
+    if not declared:
+        return None
+    if declared is True:
+        names = ["torch"]
+    elif isinstance(declared, str):
+        names = [declared]
+    else:
+        names = [str(name) for name in declared]
+    unknown = [name for name in names if name not in GPU_CAPABILITIES]
+    if unknown:
+        raise ValueError(
+            f"Invalid gpu={declared!r} - {', '.join(unknown)} is not one of "
+            f"{', '.join(GPU_CAPABILITIES)} (or true, which means torch)"
+        )
+    for name in names:
+        if name == "torch":
+            try:
+                import torch
+            except ImportError:
+                return "declares gpu: torch, and torch is not installed"
+            if not torch.cuda.is_available():
+                return "declares gpu: torch, and torch reports no CUDA device"
+        else:
+            failure = _cuda_lightgbm_probe()
+            if failure is not None:
+                return f"declares gpu: lightgbm_cuda, and {failure}"
+    return None
+
+
+def get_reruns(overrides: dict) -> int:
+    """Return per-notebook flaky retry count (default 0).
+
+    Consumed by Step 2 (pytest-rerunfailures dep + collection hook adds
+    @pytest.mark.flaky(reruns=N) when N > 0). Until that lands the value
+    is parsed but no retries happen.
+    """
+    val = overrides.get("reruns", 0)
+    if not isinstance(val, int) or val < 0:
+        raise ValueError(f"Invalid reruns={val!r} — must be non-negative int")
+    return val
+
+
+def get_record_mode(overrides: dict) -> str:
+    """Return VCR cassette mode for the notebook (default: replay)."""
+    mode = overrides.get("record_mode") or RECORD_REPLAY
+    if mode not in VALID_RECORD_MODES:
+        raise ValueError(
+            f"Invalid record_mode {mode!r} — must be one of {sorted(VALID_RECORD_MODES)}"
+        )
+    return mode
+
+
+# ---------------------------------------------------------------------------
+# Papermill parameter validation.
+#
+# Papermill injects the `parameters` block as a cell placed directly after the
+# notebook's own `parameters`-tagged cell, so an injected value only reaches the
+# code that uses it when something below that point reads the name and nothing
+# overwrites it first. Neither condition is enforced at run time: papermill
+# accepts any name, and an override that misses either one leaves the notebook
+# running at its production defaults while overrides.yaml records a reduction.
+# `unusable_parameters` is the detector; test_pm_helpers.py runs it over the
+# whole file, with no allowlist.
+# ---------------------------------------------------------------------------
+
+PARAMETERS_CELL_MARKER = 'tags=["parameters"]'
+INJECTED_CELL_MARKER = 'tags=["injected-parameters"]'
+
+
+def _percent_cell_bounds(source: str) -> list[tuple[str, int, int]]:
+    """Split jupytext percent source into (header, first_line, last_line) cells.
+
+    Lines are 1-based and inclusive, matching `ast` line numbers.
+    """
+    lines = source.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("# %%")]
+    bounds = []
+    for pos, start in enumerate(starts):
+        end = starts[pos + 1] - 1 if pos + 1 < len(starts) else len(lines) - 1
+        bounds.append((lines[start], start + 1, end + 1))
+    return bounds
+
+
+def _module_level_events(node: ast.AST, events: list[tuple[str, str, int]]) -> None:
+    """Append ("read"|"bind", name, line) in source order for module-level code.
+
+    `if`, `for`, `try` and `with` bodies are entered: a rebinding under one of
+    them still overwrites the injected value when it runs, and the read that
+    precedes it is what tells the two apart.
+
+    Function, lambda and class bodies are not entered. Their code runs when
+    called, which is after the rest of the module, so a name they mention is not
+    a read that protects an earlier value from a later module-level rebinding.
+    The parts of a definition that *do* evaluate where they are written -
+    decorators, default arguments, base classes - are collected.
+    """
+    if isinstance(node, ast.Lambda):
+        for default in [*node.args.defaults, *node.args.kw_defaults]:
+            if default is not None:
+                _module_level_events(default, events)
+        return
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        evaluated: list[ast.AST] = list(node.decorator_list)
+        evaluated += [d for d in node.args.defaults if d is not None]
+        evaluated += [d for d in node.args.kw_defaults if d is not None]
+        for sub in evaluated:
+            _module_level_events(sub, evaluated_events := [])
+            events.extend(evaluated_events)
+        events.append(("bind", node.name, node.lineno))
+        return
+    if isinstance(node, ast.ClassDef):
+        # A class body runs where it is written, not when something calls it, so
+        # what it reads is a module-level read. What it assigns is a class
+        # attribute, so those bindings do not reach the module - but they do
+        # shadow the module name for the rest of the body, and a read after one
+        # of them resolves to the attribute rather than to the parameter.
+        for sub in [*node.decorator_list, *node.bases, *(kw.value for kw in node.keywords)]:
+            _module_level_events(sub, events)
+        body: list[tuple[str, str, int]] = []
+        for statement in node.body:
+            _module_level_events(statement, body)
+        shadowed: set[str] = set()
+        for kind, bound, line in body:
+            if kind == "read" and bound not in shadowed:
+                events.append((kind, bound, line))
+            elif kind == "bind":
+                shadowed.add(bound)
+        events.append(("bind", node.name, node.lineno))
+        return
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        # A comprehension has its own scope: its loop targets bind nothing in the
+        # module, and inside it they shadow the module name rather than read it.
+        targets: set[str] = set()
+        for gen in node.generators:
+            for sub in ast.walk(gen.target):
+                if isinstance(sub, ast.Name):
+                    targets.add(sub.id)
+        for gen in node.generators:
+            _module_level_events(gen.iter, events)
+        inner: list[tuple[str, str, int]] = []
+        for gen in node.generators:
+            for condition in gen.ifs:
+                _module_level_events(condition, inner)
+        for part in ("elt", "key", "value"):
+            if (sub := getattr(node, part, None)) is not None:
+                _module_level_events(sub, inner)
+        events.extend(event for event in inner if event[1] not in targets)
+        return
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        # `from x import MAX_SYMBOLS` below the cell overwrites what was injected
+        # exactly as an assignment would.
+        for alias in node.names:
+            events.append(("bind", (alias.asname or alias.name).split(".")[0], node.lineno))
+        return
+    if isinstance(node, ast.Name):
+        kind = "read" if isinstance(node.ctx, ast.Load) else "bind"
+        events.append((kind, node.id, node.lineno))
+        return
+    if isinstance(node, ast.Call):
+        # The callee and the arguments are evaluated before the call happens, so
+        # the event goes after theirs. A call is where a function body runs, which
+        # is the only way a deferred read can happen; sequencing it with the reads
+        # and bindings is what lets the three be compared.
+        for sub in ast.iter_child_nodes(node):
+            _module_level_events(sub, events)
+        if isinstance(node.func, ast.Name):
+            events.append(("call", node.func.id, node.lineno))
+        return
+    if isinstance(node, ast.AugAssign):
+        # `X += 1` reads X before writing it.
+        _module_level_events(node.value, events)
+        if isinstance(node.target, ast.Name):
+            events.append(("read", node.target.id, node.target.lineno))
+        _module_level_events(node.target, events)
+        return
+    if isinstance(node, ast.AnnAssign) and node.value is None:
+        # `X: int` annotates without assigning, so it binds nothing and leaves
+        # the injected value in place. Only the annotation itself is evaluated.
+        _module_level_events(node.annotation, events)
+        return
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+        # The right-hand side is evaluated before the target is bound, and the
+        # ordering matters: `X = X + 1` reads X, `X = 1` discards it. Child order
+        # puts the target first for `Assign` and `NamedExpr` alike, so neither can
+        # be left to the generic walk below.
+        _module_level_events(node.value, events)
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            _module_level_events(target, events)
+        return
+    for child in ast.iter_child_nodes(node):
+        _module_level_events(child, events)
+
+
+#: Statement fields whose contents may be skipped on a given run. A binding under
+#: one of these reaches only the code in the same branch; a binding outside them
+#: all runs on every path.
+_CONDITIONAL_BODIES = {
+    ast.If: ("body", "orelse"),
+    ast.For: ("body", "orelse"),
+    ast.AsyncFor: ("body", "orelse"),
+    ast.While: ("body", "orelse"),
+    # `body` too: a statement in it may never be reached, so a binding there
+    # does not reach a handler that runs because something above it raised.
+    ast.Try: ("body", "handlers", "orelse"),
+    ast.ExceptHandler: ("body",),
+}
+
+
+def _branch_paths(tree: ast.Module) -> dict[int, tuple]:
+    """line -> the chain of conditional branches enclosing it.
+
+    An empty path means the line runs on every path through the module. One path
+    being a prefix of another means the first branch encloses the second, which
+    is what says a binding can reach a read: same branch or an outer one.
+    """
+    paths: dict[int, tuple] = {}
+
+    def walk(node: ast.AST, path: tuple) -> None:
+        for field, value in ast.iter_fields(node):
+            branching = field in _CONDITIONAL_BODIES.get(type(node), ())
+            for item in value if isinstance(value, list) else [value]:
+                if not isinstance(item, ast.AST):
+                    continue
+                inner = path + ((id(node), field),) if branching else path
+                line = getattr(item, "lineno", None)
+                if line is not None and len(inner) >= len(paths.get(line, ())):
+                    paths[line] = inner
+                walk(item, inner)
+
+    walk(tree, ())
+    return paths
+
+
+def _top_level_bindings(tree: ast.Module) -> list[tuple[str, int]]:
+    """(name, line) for bindings made by an unconditional statement of the module.
+
+    Nested statements are excluded, so this is the set of bindings that run on
+    every path through the notebook. A binding under `if`/`for`/`try` may or may
+    not run, and deciding which needs the branch analysis a config linter has no
+    business carrying, so those are left alone.
+    """
+    bound = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.append((node.name, node.lineno))
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.append(((alias.asname or alias.name).split(".")[0], node.lineno))
+            continue
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        for target in targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name):
+                    bound.append((sub.id, sub.lineno))
+    return bound
+
+
+_NESTED_SCOPE = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _own_scope_nodes(body: list[ast.AST]) -> list[ast.AST]:
+    """Nodes belonging to one scope, stopping at every nested scope.
+
+    A nested scope's own statements are somebody else's locals, so descending
+    into one would let a store in an inner function hide a read in its parent.
+    Each is visited on its own turn by the caller's `ast.walk`.
+    """
+    found: list[ast.AST] = []
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        found.append(node)
+        if not isinstance(node, _NESTED_SCOPE):
+            stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _comprehension_free_reads(node: ast.AST) -> set[str]:
+    """Names a comprehension reads from the scope around it.
+
+    Its own loop targets are its locals, so they are subtracted; everything else
+    it evaluates resolves outward.
+    """
+    targets = {
+        sub.id
+        for gen in node.generators
+        for sub in ast.walk(gen.target)
+        if isinstance(sub, ast.Name)
+    }
+    parts: list[ast.AST] = [gen.iter for gen in node.generators]
+    parts += [condition for gen in node.generators for condition in gen.ifs]
+    for attr in ("elt", "key", "value"):
+        if (sub := getattr(node, attr, None)) is not None:
+            parts.append(sub)
+    reads = set()
+    for part in parts:
+        for sub in ast.walk(part):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                reads.add(sub.id)
+    return reads - targets
+
+
+def _class_body_free_reads(node: ast.ClassDef) -> set[str]:
+    """Names a class body reads from the scope around it.
+
+    Its own assignments become class attributes and shadow an outer name for the
+    rest of the body, so they are subtracted. Methods are not walked here - they
+    are functions, and `_deferred_global_reads` reaches every function in the
+    tree on its own.
+    """
+    seen: set[str] = set()
+    bound: set[str] = set()
+    for sub in _own_scope_nodes(node.body):
+        if isinstance(sub, ast.Name):
+            (seen if isinstance(sub.ctx, ast.Load) else bound).add(sub.id)
+        elif isinstance(sub, (ast.Import, ast.ImportFrom)):
+            bound |= {(a.asname or a.name).split(".")[0] for a in sub.names}
+        elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(sub.name)
+        elif isinstance(sub, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            seen |= _comprehension_free_reads(sub)
+    for outer in [*node.bases, *node.decorator_list]:
+        seen |= {
+            sub.id
+            for sub in ast.walk(outer)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
+        }
+    return seen - bound
+
+
+def _scope_reads_and_calls(node: ast.AST) -> tuple[set[str], set[str]]:
+    """(free names this function reads, names of things it calls).
+
+    A class body at module level is not the caller's concern: Python runs one
+    where it is written, so what it reads is a module-level read and
+    `_module_level_events` records it as one. A class body *inside* a function is
+    the other case - it runs when the function is called - so its reads are
+    collected here.
+
+    A name the body also binds is local to it throughout, by Python's own scoping
+    rule, so reading it there says nothing about the module-level variable. Those
+    are excluded; a `global` declaration puts one back.
+    """
+    args = node.args
+    local = {
+        a.arg
+        for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]
+        + [x for x in (args.vararg, args.kwarg) if x is not None]
+    }
+    declared_global: set[str] = set()
+    seen: set[str] = set()
+    called: set[str] = set()
+    for sub in _own_scope_nodes(node.body if isinstance(node.body, list) else [node.body]):
+        if isinstance(sub, ast.Global):
+            declared_global |= set(sub.names)
+        elif isinstance(sub, ast.Call):
+            if isinstance(sub.func, ast.Name):
+                called.add(sub.func.id)
+        elif isinstance(sub, ast.Name):
+            (seen if isinstance(sub.ctx, ast.Load) else local).add(sub.id)
+        elif isinstance(sub, (ast.Import, ast.ImportFrom)):
+            local |= {(a.asname or a.name).split(".")[0] for a in sub.names}
+        elif isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            local.add(sub.name)
+            if isinstance(sub, ast.ClassDef):
+                # Runs when this function is called, so what it reads from
+                # outside is deferred too. `_own_scope_nodes` stops at the
+                # class, so collect them directly.
+                seen |= _class_body_free_reads(sub)
+        elif isinstance(sub, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            # Its own scope, but its free variables resolve out through this
+            # one. `_own_scope_nodes` stops here, so collect them directly.
+            seen |= _comprehension_free_reads(sub)
+    return (seen - local) | (seen & declared_global), called
+
+
+def _deferred_readers(tree: ast.Module) -> tuple[dict[str, set[str]], set[str]]:
+    """(name -> the module-level functions that read it, names read opaquely).
+
+    Knowing *which* function reads a parameter is what makes a module-level call
+    evidence about that parameter rather than about calls in general. Reads reach
+    a caller through the functions it calls, so the map is closed transitively
+    over local calls.
+
+    The second set is the escape hatch: a lambda, or a function defined inside
+    another, is not something a module-level call can name, so a parameter read
+    from one keeps the blanket exemption instead of being attributed.
+    """
+    top = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    direct: dict[str, set[str]] = {}
+    calls: dict[str, set[str]] = {}
+    opaque: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        reads, called = _scope_reads_and_calls(node)
+        if top.get(getattr(node, "name", None)) is node:
+            direct[node.name] = reads
+            calls[node.name] = called
+        else:
+            opaque |= reads
+    changed = True
+    while changed:
+        changed = False
+        for caller, callees in calls.items():
+            for callee in callees & direct.keys():
+                if not direct[callee] <= direct[caller]:
+                    direct[caller] |= direct[callee]
+                    changed = True
+    readers: dict[str, set[str]] = {}
+    for func, names in direct.items():
+        for name in names:
+            readers.setdefault(name, set()).add(func)
+    return readers, opaque
+
+
+def _papermill_visible(py_path: Path) -> set[str] | None:
+    """The parameter names papermill itself can find, or None when it cannot be asked.
+
+    Papermill does not read the parameters cell with `ast`. It scans the cell line by line
+    and splits each on `=`, so two declarations that are valid Python and obviously
+    parameters to a reader are invisible to it:
+
+    - a PEP 604 union annotation, `TOP_N_COMBOS: int | None = None`, whose `|` it cannot
+      parse (`Optional[int]` and a bare `int` are both fine);
+    - a trailing comment containing `=`, as in `TOP_K = 0  # 0 = smallest feasible k`,
+      which it splits in the wrong place.
+
+    Either one drops the override silently: papermill logs "Passed unknown parameter" and
+    the notebook runs its own default, so a CI entry that says it reduces a workload does
+    not, and the job goes on passing while measuring something else. Measured 2026-08-30:
+    ten notebooks across six case studies were in that state.
+
+    Asked of papermill rather than restated here, so this cannot go on enforcing a rule
+    papermill has stopped applying - the same reason `test_every_declared_parameter_
+    reaches_its_notebook` drives this helper instead of copying its predicate.
+    """
+    ipynb = py_path.with_suffix(".ipynb")
+    if not ipynb.exists():
+        return None
+    # Deliberately not guarded with a try/import/return-None. papermill is a declared dependency
+    # (`pyproject.toml`), and every job that runs this installs it. Swallowing its absence would
+    # turn the corpus sweep into a check that passes because it asked nobody, which is the exact
+    # shape of failure this helper exists to catch - `test-unit` did not install papermill when
+    # this was written, and a tolerant import would have hidden that instead of surfacing it.
+    from papermill import inspect_notebook
+
+    try:
+        return set(inspect_notebook(str(ipynb)))
+    except Exception:
+        # An unreadable or unpaired notebook is a different failure with its own guard.
+        return None
+
+
+def parameters_cell_names(py_path: Path) -> set[str]:
+    """Every name a notebook's `parameters`-tagged cells bind at module level.
+
+    A notebook may carry more than one such cell - `15_model_analysis` has three - so this unions
+    them. `unusable_parameters` reads only the last, because papermill injects after the last and
+    that is the span its overwrite analysis is about; a caller asking what the notebook declares
+    wants all of them.
+    """
+    source = py_path.read_text()
+    tree = ast.parse(source, filename=str(py_path))
+    spans = [
+        (lo, hi)
+        for header, lo, hi in _percent_cell_bounds(source)
+        if PARAMETERS_CELL_MARKER in header
+    ]
+    return {
+        name
+        for name, line in _top_level_bindings(tree)
+        if any(lo <= line <= hi for lo, hi in spans)
+    }
+
+
+def unusable_parameters(
+    py_path: Path, names: Iterable[str], *, research_preview: bool = True
+) -> dict[str, str]:
+    """Map each declared parameter name that cannot reach the notebook to why.
+
+    An empty dict means every name is injectable. Everything turns on where
+    papermill puts the value: in a cell immediately after the notebook's
+    `parameters`-tagged cell, or — when there is no tagged cell — above the
+    imports, ahead of the whole notebook. Anything the notebook assigns before
+    that point is overridden and does not matter. Two things after it do:
+
+    - some binding overwrites the injected value before anything reads it, so
+      the notebook goes on using its own number;
+    - nothing reads the name at all, so the value is injected into a variable
+      the notebook has no use for.
+
+    The overwrite test turns on the read rather than on the indentation.
+    Reading the injected value and then rebinding the same name is how the
+    `12_causal_dml` notebooks apply an override: they push `CV_FOLDS` into the
+    config dict, then read it back out. The value survives, so the entry is
+    valid, and `if MAX_SYMBOLS == 0: MAX_SYMBOLS = len(universe)` is the same
+    shape with the guard as the read. Every binding is checked, not just the
+    first, so a legitimate read-and-restore does not license an overwrite
+    further down.
+
+    Only bindings that run on every path are counted, and only when no function
+    body reads the name. A conditional binding may not run, and a function that
+    reads the name may be called before one that does; proving either way needs
+    branch and call analysis that would buy this file nothing. Where the analysis
+    cannot be sure, it says nothing — a missed dead entry costs a stale line,
+    a wrong rejection costs a real reduction.
+
+    Args:
+        py_path: the notebook's `.py` source
+        names: the parameter names `overrides.yaml` declares for it
+        research_preview: which of the two callers this entry is being judged for.
+            `injected_parameters` folds the translated names into PREVIEW_REDUCTIONS
+            only under the preview tier; on the canonical path it passes them through
+            by name, so a notebook that declares the mapping and not the names does
+            not receive them. Defaulting to True keeps the smoke path's answer, and
+            the fixture generator's path is the one that has to be asked for
+            explicitly - see `test_every_declared_parameter_reaches_both_callers`.
+
+    Returns:
+        {name: reason} for the names that cannot take effect.
+    """
+    names = list(names)
+    if not names:
+        return {}
+    if not py_path.exists():
+        return dict.fromkeys(names, f"no notebook at {py_path}")
+
+    source = py_path.read_text()
+    tree = ast.parse(source, filename=str(py_path))
+    cells = _percent_cell_bounds(source)
+    tagged = [c for c in cells if PARAMETERS_CELL_MARKER in c[0]]
+    # A committed `injected-parameters` cell is a leftover from a papermill run,
+    # replaced on the next one. Reading it as notebook code would report the
+    # notebook overwriting exactly what papermill is about to inject.
+    stale = [(lo, hi) for header, lo, hi in cells if INJECTED_CELL_MARKER in header]
+
+    # Papermill's cell lands right after the tagged one, or at the very top of
+    # the notebook when there is none.
+    injected_at = tagged[-1][2] if tagged else 0
+    where = (
+        "the parameters cell"
+        if tagged
+        else 'the top of the notebook (it has no `# %% tags=["parameters"]` cell)'
+    )
+
+    def live(line: int) -> bool:
+        return line > injected_at and not any(lo <= line <= hi for lo, hi in stale)
+
+    # A notebook declaring PREVIEW_REDUCTIONS receives these by translation rather than by name -
+    # `research_preview_parameters` folds them in - so the source never mentions them and the
+    # "never reads it" test below would report every one of them unreachable. The question is not
+    # dropped, it is redirected: the value lands in PREVIEW_REDUCTIONS, so that is the name whose
+    # reachability decides whether the override reaches anything. Exempting the name outright would
+    # pass a notebook that declares the mapping and never reads it, which is the exact condition
+    # this helper exists to catch.
+    cell_declares = (
+        {name for name, line in _top_level_bindings(tree) if tagged[-1][1] <= line <= injected_at}
+        if tagged
+        else set()
+    )
+    # The translation is a property of the caller, not of the notebook. `injected_parameters`
+    # applies `_collect_preview_reductions` only under `research_preview=True`; on the canonical
+    # path it strips the `PREVIEW_`-prefixed names and passes everything else through by name.
+    # Exempting these unconditionally is what let `us_equities_panel` 06 and 07 declare
+    # MAX_FOLDS and MAX_SYMBOLS that `tests/generate_intermediates.py` - which passes
+    # `research_preview=False` - could never inject: papermill logged "Passed unknown parameter"
+    # for both and the fixture ran unreduced.
+    translated = (
+        set(PREVIEW_TRANSLATED_PARAMETERS)
+        if research_preview and TRANSLATION_TARGET in cell_declares
+        else set()
+    )
+
+    events: list[tuple[str, str, int]] = []
+    _module_level_events(tree, events)
+    branch = _branch_paths(tree)
+    readers, opaque = _deferred_readers(tree)
+
+    def reaches(bind: tuple[int, int], read: tuple[int, int]) -> bool:
+        """Does this binding run before that read, and on the read's path?
+
+        Order comes from the event sequence, not the line: `_module_level_events`
+        emits an assignment's right-hand side before its target, so in a multiline
+        `X = (\\n    X + 1\\n)` the read is sequenced first even though the target
+        sits on the earlier line. The line is only how a branch path is looked up.
+        """
+        (bind_seq, bind_line), (read_seq, read_line) = bind, read
+        if bind_seq >= read_seq:
+            return False
+        here, there = branch.get(bind_line, ()), branch.get(read_line, ())
+        return here == there[: len(here)]
+
+    visible = _papermill_visible(py_path)
+
+    problems = {}
+    for name in names:
+        # A translated name is analysed through the mapping it is folded into, and any problem is
+        # reported against that mapping, because that is where the override actually has to land.
+        analysed = TRANSLATION_TARGET if name in translated else name
+        via = f" (it reaches the notebook as {TRANSLATION_TARGET})" if analysed != name else ""
+        if visible is not None and analysed not in visible:
+            # Asked first, because it decides whether the value is injected at all. The reads and
+            # rebinds below all ask what happens to an injected value, and none of them is
+            # meaningful for a name papermill never injects.
+            problems[name] = (
+                f"papermill cannot see it in {where}, so the value is never injected and the "
+                f"notebook keeps its own default; check the declaration for a `|` union "
+                f"annotation or an `=` inside a trailing comment{via}"
+            )
+            continue
+        reads = [
+            (seq, line)
+            for seq, (kind, bound, line) in enumerate(events)
+            if kind == "read" and bound == analysed and live(line)
+        ]
+        binds = [
+            (seq, line)
+            for seq, (kind, bound, line) in enumerate(events)
+            if kind == "bind" and bound == analysed and live(line)
+        ]
+        if analysed in opaque or analysed in readers:
+            # A function that reads the name is normally enough to leave the
+            # entry alone: it may be called before any binding below, and the
+            # tree does not say which happens first. The exception is a binding
+            # that nothing can run ahead of - unconditional, with no module-level
+            # read and no call to a function that reads this name above it. Then
+            # every such call happens after it and none can see the injected
+            # value. A read from a lambda or a nested function is not attributable
+            # to a name a call site can use, so it keeps the blanket exemption.
+            blocking = [(seq, line) for seq, line in binds if branch.get(line, ()) == ()]
+            reaching = [
+                seq
+                for seq, (kind, bound, line) in enumerate(events)
+                if kind == "call" and bound in readers.get(analysed, set()) and live(line)
+            ]
+            first = min((seq for seq, _ in blocking), default=None)
+            reachable = (
+                analysed in opaque
+                or first is None
+                or any(seq < first for seq in [*(r for r, _ in reads), *reaching])
+            )
+            if reachable:
+                continue
+            problems[name] = (
+                f"the binding on line {min(line for _, line in blocking)} overwrites the "
+                f"injected value before anything below {where} can call a function that "
+                f"reads it{via}"
+            )
+        elif not reads:
+            problems[name] = f"the notebook never reads it below {where}{via}"
+        elif all(any(reaches(b, r) for b in binds) for r in reads):
+            problems[name] = (
+                f"the binding on line {min(line for _, line in binds)} overwrites the "
+                f"injected value: every read below {where} is on a path that rebinds "
+                f"the name first{via}"
+            )
+    return problems
+
+
+def get_overrides(notebook_key: str) -> dict:
+    """Get parameter overrides for a notebook from tests/overrides.yaml.
+
+    Args:
+        notebook_key: Notebook path relative to repo root, no extension.
+                      e.g., "05_synthetic_data/02_tailgan_tail_risk"
+
+    Returns:
+        Dict with optional keys: timeout, gpu, parameters
+    """
+    global _overrides_cache
+    if _overrides_cache is None:
+        if OVERRIDES_PATH.exists():
+            with open(OVERRIDES_PATH) as f:
+                _overrides_cache = yaml.safe_load(f) or {}
+        else:
+            _overrides_cache = {}
+
+    return _overrides_cache.get(notebook_key) or {}
+
+
+def sync_notebook(py_path: Path) -> Path:
+    """Sync a .py notebook to a temporary .ipynb via Jupytext.
+
+    Writes to a temp file so the real .ipynb (which may contain pre-executed
+    outputs) is never overwritten.
+
+    Args:
+        py_path: Path to the .py source file
+
+    Returns:
+        Path to a temporary .ipynb file (caller must clean up)
+    """
+    # Write to a temp file — never touch the real .ipynb
+    tmp_fd, tmp_path_str = tempfile.mkstemp(suffix=".ipynb", prefix=f"_pm_{py_path.stem}_")
+    os.close(tmp_fd)
+    tmp_ipynb = Path(tmp_path_str)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "jupytext",
+            "--to",
+            "notebook",
+            "--set-kernel",
+            "python3",
+            "--output",
+            str(tmp_ipynb),
+            str(py_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(REPO_ROOT),
+    )
+    if result.returncode != 0:
+        tmp_ipynb.unlink(missing_ok=True)
+        raise RuntimeError(f"Jupytext sync failed for {py_path}: {result.stderr}")
+
+    if not tmp_ipynb.exists():
+        raise FileNotFoundError(f"Expected temp .ipynb not found after sync: {tmp_ipynb}")
+
+    return tmp_ipynb
+
+
+class KernelRouting(NamedTuple):
+    """A notebook's validated kernel routing, or why it cannot be used.
+
+    `problem` is None when the routing is usable. `python` and `launcher` are the
+    validated values the caller should pass to `run_notebook`, so the call site
+    cannot read the overrides differently from what was checked.
+    """
+
+    problem: str | None
+    python: str | None = None
+    launcher: Path | None = None
+
+
+def check_kernel_routing(overrides: dict) -> KernelRouting:
+    """Validate a notebook's kernel routing without needing the image it names.
+
+    A notebook whose dependencies live outside the interpreter running pytest
+    declares `kernel_python` (and optionally `kernel_launcher`) in overrides.yaml.
+    Both halves are written straight into a kernelspec `argv`, so a stale image or
+    a mistyped path produces either a silently skipped notebook or an opaque
+    kernel-startup error. Callers turn a problem into a test failure; returning it
+    rather than raising keeps this unit-testable off a real image.
+    """
+    kernel_python = overrides.get("kernel_python")
+    launcher = overrides.get("kernel_launcher")
+
+    if not kernel_python:
+        # run_notebook gates the whole kernelspec on kernel_python, so a launcher
+        # on its own is dropped in silence - the same undiagnosed mis-routing this
+        # function exists to close, on the other half of the pair.
+        if launcher:
+            return KernelRouting(
+                f"overrides.yaml declares kernel_launcher {launcher} with no kernel_python. "
+                f"The launcher is ignored and the notebook runs on the pytest interpreter."
+            )
+        return KernelRouting(None)
+
+    # os.access(..., X_OK) is also true for a searchable directory, so a path like
+    # /opt/bsts/bin would pass and die later at kernel startup. A directory is an
+    # error in the override itself, so pointing at the image would misdirect.
+    if Path(kernel_python).is_dir():
+        return KernelRouting(
+            f"overrides.yaml routes this notebook to {kernel_python}, "
+            f"which is a directory, not an executable file. Correct the kernel_python entry."
+        )
+
+    image = overrides.get("docker_env")
+    rebuild = (
+        f"Rebuild or repull the {image} image." if image else "Rebuild the image that provides it."
+    )
+
+    if not (Path(kernel_python).is_file() and os.access(kernel_python, os.X_OK)):
+        # Which filesystem was looked at decides who is at fault, and the two read alike
+        # otherwise: run this file from the host venv and a correct image is reported as
+        # needing a rebuild. /.dockerenv is written by the runtime, not by our images.
+        where = (
+            f"inside this container. {rebuild}"
+            if Path("/.dockerenv").exists()
+            else "on this host. That path lives inside the "
+            f"{image or 'notebook'} image, where this test is meant to execute, so nothing "
+            "here says the image is stale. Run it through the docker job instead."
+        )
+        return KernelRouting(
+            f"overrides.yaml routes this notebook to {kernel_python}, "
+            f"which is not an executable file {where}"
+        )
+
+    launcher_path = REPO_ROOT / launcher if launcher else None
+    if launcher_path is not None and not launcher_path.is_file():
+        return KernelRouting(
+            f"overrides.yaml routes this notebook through the kernel launcher {launcher}, "
+            f"which does not exist at {launcher_path}. The kernel would die at startup "
+            f"with an unrelated papermill error."
+        )
+    return KernelRouting(None, kernel_python, launcher_path)
+
+
+def register_kernelspec(python_exe: str, launcher: Path | None = None) -> tuple[str, Path]:
+    """Write a throwaway kernelspec that runs a specific interpreter.
+
+    The py312 image keeps `tfcausalimpact` in an isolated `/opt/bsts` venv because
+    it needs NumPy 1.x while the signature stack on `/opt/ml4t` needs 2.x. The
+    kernelspec baked into the image points at `/app/envs/py312/bsts_kernel.py`,
+    which only resolves under docker-compose; CI checks the repo out elsewhere.
+    Generating the spec here keeps the launcher path anchored to REPO_ROOT, so
+    the same code works in both.
+
+    Args:
+        python_exe: Interpreter to run the kernel with
+        launcher: Optional kernel launcher script (defaults to plain ipykernel)
+
+    Returns:
+        (kernel_name, jupyter_path) — set JUPYTER_PATH to the second value.
+    """
+    kernel_name = "ml4t-scoped"
+    root = Path(tempfile.mkdtemp(prefix="_pm_kernels_"))
+    spec_dir = root / "kernels" / kernel_name
+    spec_dir.mkdir(parents=True)
+
+    if launcher is not None:
+        argv = [python_exe, str(launcher), "-f", "{connection_file}"]
+    else:
+        argv = [python_exe, "-m", "ipykernel_launcher", "-f", "{connection_file}"]
+
+    (spec_dir / "kernel.json").write_text(
+        json.dumps({"argv": argv, "display_name": kernel_name, "language": "python"})
+    )
+    return kernel_name, root
+
+
+def _declares_tier_and_workspace(py_path: Path) -> bool:
+    """Whether a notebook's parameters cell declares both EXECUTION_TIER and WORKSPACE.
+
+    The pair is what makes a notebook addressable by tier and workspace at all. It is read
+    here rather than inside `research_preview_parameters` because both the preview path and
+    the canonical-with-a-workspace path need the same answer.
+    """
+    source = py_path.read_text(encoding="utf-8")
+    bounds = next(
+        (
+            (first_line, last_line)
+            for header, first_line, last_line in _percent_cell_bounds(source)
+            if PARAMETERS_CELL_MARKER in header
+        ),
+        None,
+    )
+    if bounds is None:
+        return False
+    first_line, last_line = bounds
+    tree = ast.parse(source, filename=str(py_path))
+    declared = {name for name, line in _top_level_bindings(tree) if first_line <= line <= last_line}
+    return {"EXECUTION_TIER", "WORKSPACE"} <= declared
+
+
+def research_preview_parameters(
+    py_path: Path,
+    parameters: dict | None,
+    output_dir: Path | None,
+) -> dict:
+    """Route migrated Study notebooks to the isolated reduced-run workspace."""
+    resolved = dict(parameters or {})
+    if output_dir is None:
+        return resolved
+    source = py_path.read_text(encoding="utf-8")
+    parameter_bounds = next(
+        (
+            (first_line, last_line)
+            for header, first_line, last_line in _percent_cell_bounds(source)
+            if PARAMETERS_CELL_MARKER in header
+        ),
+        None,
+    )
+    if parameter_bounds is None:
+        return resolved
+    first_line, last_line = parameter_bounds
+    tree = ast.parse(source, filename=str(py_path))
+    declared = {name for name, line in _top_level_bindings(tree) if first_line <= line <= last_line}
+    if {"EXECUTION_TIER", "WORKSPACE"} <= declared:
+        resolved["EXECUTION_TIER"] = "preview"
+        resolved["WORKSPACE"] = str(output_dir.resolve())
+        if "SUPERSEDES_POPULATION" in declared:
+            # A preview population is discarded with its workspace, so it extends no lineage
+            # and `run_model_population` refuses a non-None `supersedes` outright. The
+            # notebooks now default this to empty, so this clears an explicitly passed value
+            # rather than a default - a caller who names a canonical predecessor and asks for
+            # a preview is asking for two incompatible things, and the tier wins.
+            # Forced for the same reason the tier and the workspace are: the preview routing
+            # is this function's job, and nine notebooks each deciding it is nine chances to
+            # decide it differently.
+            resolved["SUPERSEDES_POPULATION"] = ""
+    if "PREVIEW_REDUCTIONS" in declared:
+        resolved = _collect_preview_reductions(resolved)
+    return resolved
+
+
+def resolved_registry_path(
+    py_path: Path,
+    output_dir: Path,
+    case_study: str,
+    *,
+    research_preview: bool,
+) -> Path:
+    """The registry the run this harness is about to launch will actually write to.
+
+    The tier decides the directory, and the tier is decided here rather than by the
+    caller: :func:`research_preview_parameters` binds ``EXECUTION_TIER="preview"`` for a
+    migrated Study notebook, and ``Study.activate`` then relocates the output root to
+    ``<workspace>/.preview``. A caller that names the canonical path itself snapshots and
+    queries a database the run never opens, so every registry assertion reads an absent
+    file as "the notebook registered nothing" - a failure that reads as a broken notebook
+    and is a wrong path. Resolving it through the same call that binds the tier is what
+    keeps the two from drifting apart again.
+    """
+    root = output_dir
+    if research_preview:
+        resolved = research_preview_parameters(py_path, None, output_dir)
+        if resolved.get("EXECUTION_TIER") == "preview":
+            root = output_dir / ".preview"
+    return root / case_study / "run_log" / "registry.db"
+
+
+# The override names `_collect_preview_reductions` folds into PREVIEW_REDUCTIONS, mapped to the
+# reduction key each becomes. `unusable_parameters` reads the same table, so a name that reaches a
+# notebook by translation is not reported unreachable for not appearing in its source.
+#
+# It reaches it **on the preview path only**. `injected_parameters` calls the fold under
+# `research_preview=True` and passes the names through untranslated otherwise, and
+# `tests/generate_intermediates.py:315` is the caller that passes False. An earlier version of
+# this note recorded that `06_linear` and `07_gbm` "do reach them", which was true of the smoke
+# path and false of the fixture path; both notebooks ran unreduced on 2026-09-06 with papermill
+# logging "Passed unknown parameter" for each, and `us_equities_panel/06_linear` then failed on
+# fold 0, whose 223-session training window is shorter than the 756-session burn-in
+# `model_based.regime` declares. So `unusable_parameters` takes the path as an argument.
+TRANSLATION_TARGET = "PREVIEW_REDUCTIONS"
+
+# The device override, and the population name that exists only to carry it. Neither takes the
+# `PREVIEW_` prefix, because a preview run reads them as the ordinary parameters they are.
+#
+# They are stripped together and only as a pair, keyed on `DEVICE`. A CPU fit of a population
+# declared on CUDA is a different computation - the device is inside the training identity - so
+# the notebooks refuse to publish the canonical population from one, and the entry answers that
+# by naming a population of its own. The name is downstream of the device override: drop the
+# device and the reason for the name goes with it.
+#
+# Keying on `DEVICE` is what keeps this off the entries that mean a population name canonically.
+# `fx_pairs` 13-16 declare `research_preview: false` and need `fx_pairs:preflight` on the run
+# `tests/test_case_studies.py` performs, and `us_equities_panel` 06 and 07 name one without a
+# device. None of those declares `DEVICE`, and no entry declares `DEVICE` beside
+# `research_preview: false` - `test_no_entry_pairs_a_device_with_a_canonical_ci_run` fails if one
+# ever does, because the strip would then reach a canonical run that CI performs rather than only
+# the fixture generator.
+#
+# Leaving the pair in does not fail loudly, which is why it is worth stripping. A canonical run
+# carrying both publishes a real population under the preview name and reports success:
+# `cme_futures/research_workflow.py` resolves `MODEL_POPULATION_NAMES` with
+# `OfficialPopulation.one`, which raises on a name nothing wrote, so
+# `generate_intermediates.py --through-stage 12 --no-skip-dl` would build a fixture whose own
+# `12_model_analysis` cannot read it.
+DEVICE_SCOPED_NAMES = ("DEVICE", "POPULATION_NAME")
+
+# The third element is every reduction name that states the same quantity. A translated default
+# is dropped when the notebook's own mapping already carries one of them, because two consumers
+# read this mapping and they do not spell the fold count the same way: the model families take
+# `folds`, an explicit list, and the DML resolver takes `n_folds`, a count, and rejects any key
+# outside its four (`case_studies/utils/causal.py:_DML_PREVIEW_FIELDS`). Without the aliases the
+# `MAX_FOLDS` in `_QUICK_PARAMS` reached a complete causal mapping as a fifth key and
+# `resolve_causal_request` refused the request before any fit.
+PREVIEW_TRANSLATED_PARAMETERS: dict[str, tuple[str, Callable[[Any], Any], tuple[str, ...]]] = {
+    "MAX_FOLDS": ("folds", lambda value: list(range(int(value))), ("folds", "n_folds")),
+    "MAX_SYMBOLS": ("max_symbols", int, ("max_symbols",)),
+    "TRAIN_SAMPLE_FRAC": ("train_sample_frac", float, ("train_sample_frac",)),
+}
+
+
+def _collect_preview_reductions(parameters: dict) -> dict:
+    """Fold the per-notebook reduction overrides into the single parameter that carries them.
+
+    A model notebook takes its reductions as one ``PREVIEW_REDUCTIONS`` mapping, because a
+    preview request has to declare every reduction it applies for the recorded identity to
+    describe what was actually fitted. ``overrides.yaml`` still states them one per line, the way
+    it does for every other notebook, so the translation happens here rather than in nine entries
+    that would then have to be kept agreeing with each other.
+    """
+    resolved = dict(parameters)
+    reductions = dict(resolved.get("PREVIEW_REDUCTIONS") or {})
+    for name, (key, cast, aliases) in PREVIEW_TRANSLATED_PARAMETERS.items():
+        value = resolved.pop(name, None)
+        if value is None or any(alias in reductions for alias in aliases):
+            continue
+        reductions[key] = cast(value)
+    # A preview run that reduces nothing is a canonical run wearing the wrong tier, and the
+    # request builder rejects it. Reducing the universe is the reduction that always applies.
+    if not reductions:
+        reductions["max_symbols"] = 5
+    resolved["PREVIEW_REDUCTIONS"] = reductions
+    return resolved
+
+
+def _is_canonical_tier_test(node: ast.expr) -> bool:
+    """Is this the `EXECUTION_TIER == "canonical"` comparison itself?"""
+    return (
+        isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Name)
+        and node.left.id == "EXECUTION_TIER"
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.Eq)
+        and isinstance(node.comparators[0], ast.Constant)
+        and node.comparators[0].value == "canonical"
+    )
+
+
+def _refused_by_guard(test: ast.expr) -> frozenset[str]:
+    """Names a guard refuses, or nothing if the guard is a requirement rather than a refusal.
+
+    A refusal reads `if A or B or C: raise` - every operand a bare name, so the guard fires when
+    any of them is truthy, which is to say when the caller supplied one. A requirement reads
+    `if not X or len(X) != len(set(X)): raise`, and fires when the caller did NOT supply one.
+    They sit side by side in the same canonical branch (`16_backtest.py` has both), and reading
+    the second as a refusal would strip `PREDICTION_SET_NAMES` - a parameter the canonical run
+    needs. Any `not`, comparison or call in an operand marks the guard as the second kind.
+    """
+    operands = (
+        test.values if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or) else [test]
+    )
+    names: set[str] = set()
+    for operand in operands:
+        if not isinstance(operand, ast.Name):
+            return frozenset()
+        names.add(operand.id)
+    return frozenset(names)
+
+
+def canonically_refused_parameters(py_path: Path) -> frozenset[str]:
+    """Parameters this notebook's own canonical branch raises on, read from its source.
+
+    Preview-only-ness is a property of the notebook, not of the name. The `PREVIEW_` prefix
+    covers most of it by convention, but `MAX_SYMBOLS` carries no prefix and is a preview-only
+    reduction for `us_equities_panel` 16 through 19 while being a legitimate canonical parameter
+    elsewhere - so it can be neither stripped globally nor left in. The notebook already answers
+    the question in the only place that can: `if EXECUTION_TIER == "canonical": if ... raise`.
+    This reads that answer instead of restating it in a list here, which is the same reason the
+    prefix replaced the fourteen-name list it grew out of.
+
+    Both guard shapes in the fleet are handled - the nested `if EXECUTION_TIER == "canonical":`
+    with the refusal inside it, and the flattened `if EXECUTION_TIER == "canonical" and (...)`.
+    The result is intersected with what the parameters cell declares, so a local aggregate like
+    `preview_filters` drops out; the `PREVIEW_`-prefixed names behind it are stripped by prefix
+    anyway, and the aggregate is not a parameter anyone can pass.
+    """
+    source = py_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(py_path))
+    cells = _percent_cell_bounds(source)
+    tagged = [cell for cell in cells if PARAMETERS_CELL_MARKER in cell[0]]
+    if not tagged:
+        return frozenset()
+    declared = {
+        name for name, line in _top_level_bindings(tree) if tagged[-1][1] <= line <= tagged[-1][2]
+    }
+
+    refused: set[str] = set()
+
+    def walk(node: ast.AST, in_canonical: bool) -> None:
+        if isinstance(node, ast.If):
+            here, inner = in_canonical, node.test
+            if isinstance(node.test, ast.BoolOp) and isinstance(node.test.op, ast.And):
+                rest = [v for v in node.test.values if not _is_canonical_tier_test(v)]
+                if len(rest) < len(node.test.values):
+                    here = True
+                inner = rest[0] if len(rest) == 1 else None
+            elif _is_canonical_tier_test(node.test):
+                here, inner = True, None
+            if here and inner is not None and any(isinstance(s, ast.Raise) for s in node.body):
+                refused.update(_refused_by_guard(inner))
+            for statement in node.body:
+                walk(statement, here)
+            for statement in node.orelse:
+                walk(statement, in_canonical)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child, in_canonical)
+
+    walk(tree, False)
+    return frozenset(refused & declared)
+
+
+def injected_parameters(
+    py_path: Path,
+    parameters: dict | None,
+    output_dir: Path | None,
+    *,
+    research_preview: bool,
+) -> dict | None:
+    """Return what Papermill should inject, given the tier this run declares.
+
+    A ``PREVIEW_*`` parameter only means anything under the preview tier, and the notebooks
+    reject one outright on a canonical run. An override file declares it once and both paths
+    read that file: ``tests/generate_intermediates.py`` passes the same entry with
+    ``research_preview=False``, so leaving it in fails at request construction instead of
+    reducing anything.
+
+    Every ``PREVIEW_``-prefixed key is stripped rather than a named list of them. The list
+    form named ``PREVIEW_REDUCTIONS`` alone while ``tests/overrides.yaml`` had grown to
+    fourteen distinct ``PREVIEW_`` names, so thirteen were reaching the canonical path
+    already - ``PREVIEW_LABELS``, ``PREVIEW_MAX_ALLOCATORS``, ``PREVIEW_MAX_BASELINE_ROWS``,
+    ``PREVIEW_MAX_COST_VALUES``, ``PREVIEW_MAX_DIAGNOSTICS``, ``PREVIEW_MAX_PREDICTIONS``,
+    ``PREVIEW_MAX_RISK_CONTROLS``, ``PREVIEW_MAX_SAMPLES``, ``PREVIEW_MAX_SOURCE_ROWS``,
+    ``PREVIEW_N_EPOCHS``, ``PREVIEW_N_FACTORS``, ``PREVIEW_N_FOLDS`` and
+    ``PREVIEW_N_PLACEBO``. A named list is stale as soon as anyone adds a parameter without
+    editing it, and nobody had for thirteen of them.
+
+    It was latent rather than live because a leaked parameter only matters to a notebook that
+    refuses one: ``cme_futures`` 13 through 17 raise "canonical execution cannot declare
+    preview reductions", which is what makes the gap reachable, and they sit above
+    ``generate_intermediates.py``'s default ``--through-stage 8``. A higher stage bound, or
+    the same guard added to an earlier notebook, reaches it.
+
+    **The prefix narrows the gap and the notebook closes it.** Preview-only-ness is a property
+    of the notebook, not of the name. ``MAX_SYMBOLS`` carries no prefix and is a preview-only
+    reduction for ``us_equities_panel`` 16 through 19, whose canonical branch refuses it, while
+    being a legitimate canonical parameter for 57 other entries - which
+    ``test_injected_parameters_keeps_everything_else_on_a_canonical_run`` pins. So it can be
+    neither stripped by name nor left in, and no list here can decide it. Only the notebook can,
+    and it already does: ``canonically_refused_parameters`` reads the refusal out of the
+    notebook's own ``EXECUTION_TIER == "canonical"`` guard. Naming the four here instead would
+    have gone stale the same way the fourteen ``PREVIEW_`` names did.
+
+    What is here covers every ``PREVIEW_``-prefixed name, whatever the notebook's own guard
+    refuses, and ``DEVICE_SCOPED_NAMES`` - the last only for an entry that declares ``DEVICE``,
+    which is what confines them to the entries where the population name exists to carry the
+    device. The device pair stays separate rather than folding into the guard read: no notebook
+    refuses ``DEVICE`` or ``POPULATION_NAME``, because a canonical run of a CPU-fitted population
+    is wrong for a reason the notebook expresses by refusing to publish, not by raising.
+    """
+    if research_preview:
+        return research_preview_parameters(py_path, parameters, output_dir)
+    resolved = dict(parameters or {})
+    for name in [key for key in resolved if key.startswith("PREVIEW_")]:
+        resolved.pop(name)
+    for name in canonically_refused_parameters(py_path):
+        resolved.pop(name, None)
+    if "DEVICE" in resolved:
+        for name in DEVICE_SCOPED_NAMES:
+            resolved.pop(name, None)
+    # Declining the preview tier must NOT decline the isolated workspace. They are two
+    # decisions and this flag used to collapse them: false left WORKSPACE at the
+    # notebook's declared "", `open_study` took the `workspace=None` branch
+    # (workspace.py:374) into `Study.regenerate`, and that is the in-place production
+    # path - which in a maintainer worktree, where case_studies/*/run_log links to the
+    # shared artifacts, writes to the real registry. It also calls activate(), resetting
+    # ML4T_OUTPUT_DIR for everything after it. Measured 2026-08-24: a test run of
+    # fx_pairs 13-16 wrote 13 official populations, 1 candidate set and 269 backtest runs
+    # into the published fx_pairs registry, and froze one population incomplete.
+    #
+    # Canonical-tier-with-a-workspace is the third combination `open_study`'s own
+    # docstring names: the same computation at full scale against an isolated registry,
+    # unable to damage the published one. That is what a reader under test needs, and the
+    # harness must never be able to reach the in-place path.
+    if output_dir is not None and _declares_tier_and_workspace(py_path):
+        resolved["WORKSPACE"] = str(output_dir.resolve())
+    return resolved or None
+
+
+def _progress_log_path(py_path: Path) -> Path:
+    """Where this run writes its cell-level progress.
+
+    Keyed on the notebook's path relative to the repo root, plus the pid. The stem
+    alone is not unique: `04_model_based_features`, `12_backtest` and `05_evaluation`
+    are shared by all nine case studies and by chapter notebooks, and the file is
+    opened with mode "w" - so one pane truncated another's. Observed on 2026-08-05
+    while `cs-sp500_options` was executing its own `04_model_based_features`: the log
+    held `params={'GARCH_MIN_OBS': 50, 'MAX_SYMBOLS': 5, ...}`, which is the etfs
+    entry from `tests/overrides.yaml`, written by a different pane.
+
+    That matters because `work/2026-08-05-ci-green/PROTOCOL.md` names this file as the
+    way to see which cell a hanging notebook is on, "which is faster than waiting for
+    the traceback". Reporting another job's notebook is worse than reporting nothing:
+    it is wrong and plausible at the same time.
+
+    The pid separates two panes running the same notebook, which the path alone does
+    not. `ML4T_OUTPUT_DIR` would separate them too, but it is not always set and the
+    pid always is.
+    """
+    try:
+        slug = py_path.resolve().relative_to(REPO_ROOT).with_suffix("").as_posix()
+    except ValueError:
+        slug = py_path.stem
+    return Path(f"/tmp/ml4t-pm-{slug.replace('/', '_')}.{os.getpid()}.log")
+
+
+def run_notebook(
+    py_path: Path,
+    parameters: dict | None = None,
+    timeout: int = 300,
+    output_dir: Path | None = None,
+    data_dir: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+    log_path: Path | None = None,
+    cwd: Path | None = None,
+    kernel_python: str | None = None,
+    kernel_launcher: Path | None = None,
+    research_preview: bool = False,
+) -> dict:
+    """Execute a notebook via Papermill with parameter injection.
+
+    This is the core test helper. It:
+    1. Syncs .py -> .ipynb via Jupytext
+    2. Executes via Papermill with parameter overrides
+    3. Logs per-cell progress to log_path (if provided)
+    4. Returns status and error info
+
+    Args:
+        py_path: Path to the .py notebook source
+        parameters: Dict of parameters to inject (overrides defaults in parameters cell)
+        timeout: Per-cell timeout in seconds
+        output_dir: Directory for ML4T_OUTPUT_DIR (redirects saves to temp)
+        data_dir: Directory for ML4T_DATA_PATH (test data location)
+        extra_env: Additional environment variables for notebook execution
+        log_path: Path to progress log file (appended to)
+        kernel_python: Interpreter to execute with, when the notebook needs an
+            environment other than the one running pytest
+        kernel_launcher: Optional launcher script for that interpreter
+        research_preview: Inject preview tier and workspace for migrated Study notebooks
+
+    Returns:
+        Dict with keys: status ("ok" or "error"), error (str if failed),
+        duration_s (float), n_cells (int)
+    """
+    import time
+
+    import papermill as pm
+
+    start = time.time()
+    nb_name = py_path.stem
+    parameters = injected_parameters(
+        py_path, parameters, output_dir, research_preview=research_preview
+    )
+
+    def _log(msg: str) -> None:
+        if log_path:
+            with open(log_path, "a") as f:
+                f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+                f.flush()
+
+    _log(f"START {nb_name} (timeout={timeout}s)")
+
+    # Sync to a temp .ipynb (never overwrites the real .ipynb)
+    tmp_ipynb: Path | None = None
+    try:
+        tmp_ipynb = sync_notebook(py_path)
+    except (RuntimeError, FileNotFoundError) as e:
+        _log(f"SYNC_FAIL {nb_name}: {e}")
+        return {
+            "status": "error",
+            "error": f"Jupytext sync failed: {e}",
+            "duration_s": time.time() - start,
+            "n_cells": 0,
+        }
+
+    ipynb_path = tmp_ipynb
+
+    # Executed notebook output path
+    executed_path = py_path.parent / f"_executed_{py_path.stem}.ipynb"
+
+    # Setup environment - Papermill's execute_notebook inherits os.environ,
+    # so we temporarily set env vars and restore them after execution.
+    saved_env = {}
+    env_vars = {
+        "MPLBACKEND": "Agg",
+        "PLOTLY_RENDERER": "json",
+        # Which notebook is running. Nothing papermill injects reaches the kernel, so a study
+        # opened without an explicit `entry_point` had no way to name the notebook that opened
+        # it and every training run it registered wrote the column NULL. The launcher is the
+        # one party that knows, so it says so; `research/workspace._resolve_entry_point` reads
+        # it and an explicit argument still wins.
+        "ML4T_ENTRY_POINT": nb_name,
+        **KERNEL_THREAD_CAPS,
+    }
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        env_vars["ML4T_OUTPUT_DIR"] = str(output_dir)
+    if data_dir:
+        env_vars["ML4T_DATA_PATH"] = str(data_dir)
+    if extra_env:
+        env_vars.update({key: str(value) for key, value in extra_env.items()})
+
+    # PYTHONPATH includes repo root for utils imports + notebook dir for sibling imports
+    existing = os.environ.get("PYTHONPATH", "")
+    nb_dir = str(py_path.parent.resolve())
+    env_vars["PYTHONPATH"] = (
+        f"{REPO_ROOT}:{nb_dir}:{existing}" if existing else f"{REPO_ROOT}:{nb_dir}"
+    )
+
+    # Ensure torch's bundled CUDA libraries are found before system ones.
+    # The system libcudart.so.12 may be outdated and missing symbols like
+    # cudaGetDriverEntryPointByVersion that torch's bundled version provides.
+    # Located with find_spec rather than by importing torch: this process only needs
+    # the paths, and executing the package to read them costs 502 MB resident in every
+    # worker (#558). The resulting string is identical.
+    try:
+        torch_spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
+        torch_spec = None
+    if torch_spec is not None and torch_spec.origin:
+        torch_root = Path(torch_spec.origin).parent
+        nvidia_libs = list((torch_root.parent / "nvidia").glob("*/lib"))
+        cuda_paths = [str(torch_root / "lib")] + [str(p) for p in nvidia_libs]
+        existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        env_vars["LD_LIBRARY_PATH"] = ":".join(cuda_paths + [existing_ld])
+
+    # A notebook whose dependencies live in a separate venv runs on its own
+    # kernelspec, written to a temp JUPYTER_PATH so nothing global is touched.
+    kernel_name = "python3"
+    kernel_root: Path | None = None
+    if kernel_python:
+        kernel_name, kernel_root = register_kernelspec(kernel_python, kernel_launcher)
+        env_vars["JUPYTER_PATH"] = str(kernel_root)
+
+    remove_vars = ["TEST", "QUICK_TEST"]
+    if extra_env:
+        for key in extra_env:
+            if key in remove_vars:
+                remove_vars.remove(key)
+
+    # Apply environment changes
+    for key, value in env_vars.items():
+        saved_env[key] = os.environ.get(key)
+        os.environ[key] = value
+    for key in remove_vars:
+        saved_env[key] = os.environ.pop(key, None)
+
+    # Cell-level progress — always logged for visibility. Since
+    # request_save_on_cell_execute=True, the executed notebook is updated after each
+    # cell. Monitor it with: watch -n5 'python -c "import json; ..."'
+    progress_log = _progress_log_path(py_path)
+    n_cells = 0
+    try:
+        with open(progress_log, "w") as pf:
+            pf.write(f"START {nb_name} timeout={timeout}s params={parameters}\n")
+
+        pm.execute_notebook(
+            str(ipynb_path),
+            str(executed_path),
+            parameters=parameters or {},
+            cwd=str(cwd or REPO_ROOT),
+            kernel_name=kernel_name,
+            execution_timeout=timeout,
+            request_save_on_cell_execute=True,
+            progress_bar=False,
+            log_output=True,
+        )
+        # Count cells in executed notebook
+        try:
+            import nbformat
+
+            nb = nbformat.read(str(executed_path), as_version=4)
+            n_cells = len([c for c in nb.cells if c.cell_type == "code"])
+        except Exception:
+            pass
+
+        elapsed = time.time() - start
+        msg = f"OK    {nb_name} ({elapsed:.1f}s, {n_cells} cells)"
+        _log(msg)
+        with open(progress_log, "a") as pf:
+            pf.write(f"{msg}\n")
+        return {"status": "ok", "error": None, "duration_s": elapsed, "n_cells": n_cells}
+    except pm.PapermillExecutionError as e:
+        elapsed = time.time() - start
+        msg = f"FAIL  {nb_name} cell {e.cell_index} ({e.ename}): {e.evalue} ({elapsed:.1f}s)"
+        _log(msg)
+        with open(progress_log, "a") as pf:
+            pf.write(f"{msg}\n")
+        return {
+            "status": "error",
+            "error": f"Cell {e.cell_index} ({e.ename}): {e.evalue}",
+            "duration_s": elapsed,
+            "n_cells": e.cell_index,
+        }
+    except Exception as e:
+        elapsed = time.time() - start
+        _log(f"FAIL  {nb_name}: {e} ({elapsed:.1f}s)")
+        return {"status": "error", "error": str(e), "duration_s": elapsed, "n_cells": 0}
+    finally:
+        # Restore environment
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        # Clean up temp input notebook
+        if tmp_ipynb is not None and tmp_ipynb.exists():
+            tmp_ipynb.unlink()
+        # Clean up executed notebook
+        if executed_path.exists():
+            executed_path.unlink()
+        # Clean up the temp kernelspec
+        if kernel_root is not None:
+            shutil.rmtree(kernel_root, ignore_errors=True)
+
+
+def collect_chapter_notebooks(repo_root: Path, chapter_range: range) -> list[Path]:
+    """Collect all teaching notebooks from chapter directories.
+
+    NOTE: Review repo has flat layout — notebooks live directly in
+    chapter directories (e.g., 05_synthetic_data/01_timegan.py),
+    NOT in code/ subdirectories.
+
+    Args:
+        repo_root: Repository root path
+        chapter_range: Range of chapter numbers to include
+
+    Returns:
+        Sorted list of .py notebook paths
+    """
+    notebooks = []
+    for chapter_dir in sorted(repo_root.glob("[0-9][0-9]_*")):
+        if not chapter_dir.is_dir():
+            continue
+
+        # Extract chapter number from directory name
+        try:
+            ch_num = int(chapter_dir.name[:2])
+        except ValueError:
+            continue
+
+        if ch_num not in chapter_range:
+            continue
+
+        # Review repo: notebooks are directly in the chapter directory
+        for notebook in sorted(chapter_dir.glob("*.py")):
+            # Skip non-notebook files — use startswith to avoid false positives
+            # (e.g., "test_" must not match "backtest_")
+            if any(
+                notebook.name.startswith(prefix)
+                for prefix in [
+                    "test_",
+                    "conftest",
+                    "extract_book_figures",
+                    "export_figures",
+                    "batch_",
+                ]
+            ) or any(x in notebook.name for x in ["__pycache__", "__init__"]):
+                continue
+
+            # Skip archived/draft/reserved directories
+            if any(
+                x in str(notebook)
+                for x in ["_archive", "archived", "drafts", "inventory", "_reserved"]
+            ):
+                continue
+
+            # Skip helper/utility files (start with _)
+            if notebook.name.startswith("_"):
+                continue
+
+            if not notebook.name[0].isdigit() and not notebook.with_suffix(".ipynb").exists():
+                continue
+
+            notebooks.append(notebook)
+
+    return notebooks
+
+
+# ---------------------------------------------------------------------------
+# One overrides entry, one or several parameterised runs
+# ---------------------------------------------------------------------------
+
+
+class Invocation(NamedTuple):
+    """One parameterised execution of one notebook.
+
+    ``id`` is ``None`` for an entry that declares a single unnamed run, which is
+    every entry that predates this grammar, and a short label otherwise. It ends up
+    in the pytest test id, so a failure names which run failed rather than only
+    which notebook.
+    """
+
+    id: str | None
+    parameters: dict
+
+
+def invocations_for(entry: dict, *, key: str = "<entry>") -> list[Invocation]:
+    """Every parameterised run an overrides entry asks for.
+
+    Two shapes. The common one is a single `parameters` mapping, which is one run and
+    the whole of what this file expressed before::
+
+        case_studies/etfs/06_linear:
+          parameters: {MAX_FOLDS: 2}
+
+    The other is `invocations`, a list naming several runs of one notebook::
+
+        case_studies/etfs/14_backtest:
+          invocations:
+            - id: fwd_ret_5d
+              parameters: {LABEL: fwd_ret_5d}
+            - id: fwd_ret_21d
+              parameters: {LABEL: fwd_ret_21d}
+
+    which exists because three case studies take their label as a parameter and
+    declare several - `etfs` two, `us_firm_characteristics` three,
+    `sp500_equity_option_analytics` five - while the runner could only execute a
+    notebook once. A chain that exercises one label of five asserts nothing about
+    the other four, and "every declared label carries rankable validation backtests"
+    is a condition those case studies have to meet.
+
+    **Raises rather than returning something plausible for a shape it does not
+    recognise.** The check this feeds used to filter on
+    `isinstance(entry.get("parameters"), dict)`, so an entry written in any other
+    shape was silently dropped from it - not failed, dropped - and a dropped entry is
+    indistinguishable from a passing one. Refusing loudly is the point of the
+    function existing rather than each caller reading the key itself.
+    """
+    if not isinstance(entry, dict):
+        raise TypeError(f"{key}: an overrides entry must be a mapping, got {type(entry).__name__}")
+
+    declared = entry.get("invocations")
+    parameters = entry.get("parameters")
+
+    if declared is None:
+        if parameters is None:
+            return [Invocation(None, {})]
+        if not isinstance(parameters, dict):
+            raise TypeError(
+                f"{key}: `parameters` must be a mapping of names to values, got "
+                f"{type(parameters).__name__}. Several runs of one notebook are declared "
+                f"under `invocations`, not by making this a list."
+            )
+        return [Invocation(None, parameters)]
+
+    if parameters is not None:
+        raise ValueError(
+            f"{key}: declares both `parameters` and `invocations`. Everything a run needs "
+            f"goes in its own entry under `invocations`, so that what each run was given is "
+            f"readable in one place."
+        )
+    if not isinstance(declared, list) or not declared:
+        raise TypeError(f"{key}: `invocations` must be a non-empty list, got {declared!r}")
+
+    seen: list[str] = []
+    out: list[Invocation] = []
+    for position, item in enumerate(declared):
+        where = f"{key}: invocations[{position}]"
+        if not isinstance(item, dict):
+            raise TypeError(f"{where}: must be a mapping with `id` and `parameters`")
+        unknown = set(item) - {"id", "parameters"}
+        if unknown:
+            raise ValueError(
+                f"{where}: unknown key(s) {sorted(unknown)}. An invocation carries only its "
+                f"`id` and its `parameters`; anything that applies to every run of the "
+                f"notebook - timeout, skip, requires_stage - belongs on the entry."
+            )
+        run_id = item.get("id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError(f"{where}: needs a non-empty string `id`; it names the run in CI")
+        if run_id in seen:
+            raise ValueError(f"{where}: duplicate id {run_id!r}; ids identify a run in a failure")
+        run_parameters = item.get("parameters")
+        if run_parameters is None:
+            run_parameters = {}
+        if not isinstance(run_parameters, dict):
+            raise TypeError(f"{where}: `parameters` must be a mapping, got {run_parameters!r}")
+        seen.append(run_id)
+        out.append(Invocation(run_id, run_parameters))
+    return out
+
+
+def sole_invocation(entry: dict, *, key: str = "<entry>") -> Invocation:
+    """The one run this entry declares, for a caller that can only execute one.
+
+    Raises when the entry declares several rather than quietly running the first,
+    which would report a notebook as exercised on a parameter set nobody chose.
+    """
+    runs = invocations_for(entry, key=key)
+    if len(runs) > 1:
+        raise ValueError(
+            f"{key}: declares {len(runs)} invocations ({', '.join(r.id or '?' for r in runs)}), "
+            f"and this caller executes a notebook once. Teach it to iterate "
+            f"`invocations_for` rather than picking one."
+        )
+    return runs[0]
+
+
+def declares_parameters(entry: dict, *, key: str = "<entry>") -> bool:
+    """Whether any run of this notebook is given parameters at all."""
+    return any(run.parameters for run in invocations_for(entry, key=key))
+
+
+def unreachable_declared_parameters(
+    overrides: dict, *, research_preview: bool
+) -> dict[str, dict[str, str]]:
+    """Every declared parameter name papermill cannot inject, over every invocation.
+
+    Keyed by `<notebook>` for a single-run entry and `<notebook>[<id>]` for one run of
+    several, so the failure names the run rather than only the notebook. Entries whose
+    shape `invocations_for` does not recognise raise out of here rather than being
+    skipped: a sweep that silently omits an entry reports the same empty dict as one
+    that checked it and found nothing wrong.
+    """
+    unreachable: dict[str, dict[str, str]] = {}
+    for key, entry in overrides.items():
+        if not isinstance(entry, dict):
+            continue
+        for run in invocations_for(entry, key=key):
+            if not run.parameters:
+                continue
+            unusable = unusable_parameters(
+                REPO_ROOT / f"{key}.py", run.parameters, research_preview=research_preview
+            )
+            if unusable:
+                unreachable[key if run.id is None else f"{key}[{run.id}]"] = unusable
+    return unreachable

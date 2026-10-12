@@ -1,0 +1,91 @@
+# Global Macro Multi-Asset Quantitative Databank (NautilusTrader Native)
+
+**Storage Root**: `/run/user/1000/gvfs/smb-share:server=192.168.1.6,share=iflow/数据库5/nautilus_databank`  
+**Native NautilusTrader Catalog**: `/run/user/1000/gvfs/smb-share:server=192.168.1.6,share=iflow/数据库5/nautilus_databank/catalog`  
+**Coverage**: 2020-01-01 to Present (2026)  
+**Total Indexed BarTypes**: **63**  
+**Total Validated Bars**: **42,278,836**  
+**Total Storage Size**: **1048.76 MB (1.02 GB)**  
+**Target Engine**: Nautilus Trader (v1.200+) & Polars / VectorBT  
+
+---
+
+## Complete Multi-Asset Universe (Top 5 Per Category, 2020-2026)
+
+| Index | Nautilus BarType | Resolution | Chunks | Date Range | Total Valid Bars | Clean Size |
+|---|---|---|---|---|---|---|
+| 01 | `BNBUSD.CRYPTO-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-26 | 2,461 | 0.16 MB |
+| 02 | `BNBUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 5 | 2020-01-01 to 2024-12-31 | 2,628,554 | 78.02 MB |
+| 03 | `BTCUSD.CRYPTO-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-26 | 2,461 | 0.16 MB |
+| 04 | `BTCUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-14 | 2,887,347 | 81.56 MB |
+| 05 | `BZ.ICE-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-24 | 1,694 | 0.12 MB |
+| 06 | `CL.NYMEX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.12 MB |
+| 07 | `DOGEUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-07-10 to 2026-02-14 | 2,439,592 | 57.03 MB |
+| 08 | `ES.CME-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,695 | 0.11 MB |
+| 09 | `ETHUSD.CRYPTO-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-26 | 2,461 | 0.16 MB |
+| 10 | `ETHUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-14 | 2,887,653 | 77.87 MB |
+| 11 | `EURUSD.FX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-25 | 1,705 | 0.11 MB |
+| 12 | `EURUSD.FX-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-13 | 2,276,723 | 54.93 MB |
+| 13 | `FDAX.EUREX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-24 | 1,716 | 0.12 MB |
+| 14 | `FESX.EUREX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-24 | 1,695 | 0.12 MB |
+| 15 | `GBPUSD.FX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-24 | 1,710 | 0.11 MB |
+| 16 | `GBPUSD.FX-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-13 | 2,275,346 | 56.29 MB |
+| 17 | `GC.COMEX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,695 | 0.12 MB |
+| 18 | `GLD.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 840,264 | 20.07 MB |
+| 19 | `GOLD.METALS-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 1 | 2026-01-05 to 2026-02-13 | 41,210 | 1.1 MB |
+| 20 | `HG.COMEX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,695 | 0.12 MB |
+| 21 | `IEF.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 6 | 2020-01-02 to 2025-12-31 | 587,578 | 12.8 MB |
+| 22 | `IWM.ARCA-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.14 MB |
+| 23 | `IWM.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 1,117,000 | 27.63 MB |
+| 24 | `NDX.NASDAQ-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.12 MB |
+| 25 | `NG.NYMEX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,695 | 0.12 MB |
+| 26 | `NKD.OSE-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-05 to 2026-09-24 | 1,642 | 0.12 MB |
+| 27 | `NQ.CME-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,695 | 0.11 MB |
+| 28 | `PAXG.RWA-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-26 | 2,461 | 0.15 MB |
+| 29 | `PAXGUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 5 | 2020-08-28 to 2024-12-31 | 2,283,136 | 54.6 MB |
+| 30 | `QQQ.NASDAQ-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.14 MB |
+| 31 | `QQQ.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 1,304,397 | 33.67 MB |
+| 32 | `SHY.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 457,675 | 8.99 MB |
+| 33 | `SILVER.METALS-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-13 | 2,162,424 | 48.18 MB |
+| 34 | `SLV.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 877,309 | 20.03 MB |
+| 35 | `SOFR_TLT.CME-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.14 MB |
+| 36 | `SOLUSD.CRYPTO-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-04-10 to 2026-09-26 | 2,361 | 0.16 MB |
+| 37 | `SOLUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 6 | 2021-09-18 to 2026-02-14 | 2,297,722 | 52.89 MB |
+| 38 | `SPX.CBOE-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.12 MB |
+| 39 | `SPY.ARCA-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.14 MB |
+| 40 | `SPY.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 1,281,134 | 33.12 MB |
+| 41 | `TLT.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 906,788 | 21.4 MB |
+| 42 | `TN.CBOT-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,691 | 0.11 MB |
+| 43 | `UNG.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 803,647 | 18.18 MB |
+| 44 | `USDCHF.FX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-24 | 1,711 | 0.11 MB |
+| 45 | `USDCHF.FX-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-13 | 2,272,089 | 53.46 MB |
+| 46 | `USDCNY.FX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-24 | 1,715 | 0.11 MB |
+| 47 | `USDJPY.FX-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-24 | 1,653 | 0.11 MB |
+| 48 | `USDJPY.FX-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-13 | 2,276,119 | 54.48 MB |
+| 49 | `USO.US_EQUITY-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-03-31 | 789,962 | 18.14 MB |
+| 50 | `XAGUSD.METALS-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,694 | 0.12 MB |
+| 51 | `XAUCNH.FX-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 2 | 2025-09-17 to 2026-02-13 | 143,616 | 4.19 MB |
+| 52 | `XAUT.RWA-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-02-07 to 2026-09-26 | 2,424 | 0.15 MB |
+| 53 | `XAUUSD.METALS-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,695 | 0.12 MB |
+| 54 | `XPDUSD.METALS-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,693 | 0.11 MB |
+| 55 | `XPDUSD.METALS-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 6 | 2021-01-04 to 2026-02-13 | 1,701,154 | 40.8 MB |
+| 56 | `XPTUSD.METALS-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-24 | 1,693 | 0.11 MB |
+| 57 | `XPTUSD.METALS-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 6 | 2021-01-04 to 2026-02-13 | 1,799,450 | 43.81 MB |
+| 58 | `XRPUSD.CRYPTO-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-01 to 2026-09-26 | 2,461 | 0.16 MB |
+| 59 | `XRPUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL` | 1-Minute | 7 | 2020-01-02 to 2026-02-14 | 2,873,061 | 70.89 MB |
+| 60 | `ZC.CBOT-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,693 | 0.11 MB |
+| 61 | `ZF.CBOT-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.11 MB |
+| 62 | `ZN.CBOT-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,692 | 0.11 MB |
+| 63 | `ZT.CBOT-1-DAY-LAST-EXTERNAL` | 1-Day | 7 | 2020-01-02 to 2026-09-25 | 1,693 | 0.11 MB |
+
+---
+
+## Nautilus Trader Direct Load Example
+
+```python
+from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
+
+catalog = ParquetDataCatalog("/run/user/1000/gvfs/smb-share:server=192.168.1.6,share=iflow/数据库5/nautilus_databank/catalog")
+bars = catalog.bars(bar_types=["BTCUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL"])
+print(f"Loaded {len(bars):,} bars for event-driven backtest.")
+```

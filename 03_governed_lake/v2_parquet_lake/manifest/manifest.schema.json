@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QuantDatabaseManifest",
+  "description": "Standardized schema definition and global registry contract for multi-asset quantitative backtesting lake.",
+  "type": "object",
+  "required": [
+    "database_name",
+    "version",
+    "storage_specification",
+    "governance_contract",
+    "catalog"
+  ],
+  "properties": {
+    "database_name": { "type": "string" },
+    "version": { "type": "string" },
+    "last_updated_utc": { "type": "string", "format": "date-time" },
+    "storage_specification": {
+      "type": "object",
+      "required": ["primary_format", "compression", "compression_level", "row_group_target"],
+      "properties": {
+        "primary_format": { "type": "string", "enum": ["parquet"] },
+        "compression": { "type": "string", "enum": ["zstd", "snappy"] },
+        "compression_level": { "type": "integer" },
+        "row_group_target": { "type": "integer" },
+        "query_engine_compatibility": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "governance_contract": {
+      "type": "object",
+      "required": [
+        "time_index_definition",
+        "timestamp_unit",
+        "alignment_rule",
+        "lookahead_bias_guarantee",
+        "mandatory_columns"
+      ],
+      "properties": {
+        "time_index_definition": { "type": "string" },
+        "timestamp_unit": { "type": "string", "enum": ["milliseconds", "microseconds"] },
+        "alignment_rule": { "type": "string", "enum": ["left_open_time", "right_close_time"] },
+        "lookahead_bias_guarantee": { "type": "boolean" },
+        "mandatory_columns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type", "description"],
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "supported_timeframes": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["1m", "15m", "1h", "4h", "1d"] }
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "required": ["crypto_perpetuals", "us_equities", "us_futures", "global_futures"],
+      "properties": {
+        "crypto_perpetuals": {
+          "type": "object",
+          "required": ["market", "symbols_count", "symbols"],
+          "properties": {
+            "market": { "type": "string" },
+            "symbols_count": { "type": "integer" },
+            "symbols": { "type": "object" }
+          }
+        },
+        "us_equities": {
+          "type": "object",
+          "required": ["market", "symbols"],
+          "properties": {
+            "market": { "type": "string" },
+            "symbols": { "type": "object" }
+          }
+        },
+        "us_futures": {
+          "type": "object",
+          "required": ["market", "symbols"],
+          "properties": {
+            "market": { "type": "string" },
+            "symbols": { "type": "object" }
+          }
+        },
+        "global_futures": {
+          "type": "object",
+          "required": ["index_futures", "commodities_and_rates"],
+          "properties": {
+            "index_futures": { "type": "object" },
+            "commodities_and_rates": { "type": "object" }
+          }
+        }
+      }
+    }
+  }
+}

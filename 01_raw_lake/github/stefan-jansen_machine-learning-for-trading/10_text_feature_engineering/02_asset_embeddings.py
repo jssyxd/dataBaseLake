@@ -1,0 +1,1151 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: tags,-all
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.3
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Asset Embeddings: Word2Vec Applied to Portfolios
+#
+# **Chapter 10: Text Feature Engineering**
+# **Section Reference**: See Section 10.2 for distributional hypothesis and Word2Vec
+#
+# **Docker image**: `ml4t-py312`
+#
+# > **Docker required**: this notebook uses `gensim`, which does not build against the
+# > Python version the rest of the repository runs on. Run it with:
+# > ```bash
+# > docker compose --profile py312 run --rm py312 python 10_text_feature_engineering/02_asset_embeddings.py
+# > ```
+#
+# ## Purpose
+# This notebook demonstrates how Word2Vec - the foundational NLP embedding method -
+# extends beyond text to financial assets. Just as words appearing in similar
+# contexts have similar meanings, stocks appearing in similar portfolios may
+# share fundamental characteristics.
+#
+# We train Word2Vec on institutional 13F holdings data, treating:
+# - **Portfolios** as sentences (ordered sequences of words)
+# - **Stocks** as words (tokens in those sentences)
+# - **Position ordering** as word order (stocks ranked by holding size)
+#
+# ## Learning Objectives
+# After completing this notebook, you will be able to:
+# - Apply Word2Vec (skip-gram) to non-text data
+# - Create "portfolio sentences" from institutional holdings
+# - Train asset embeddings using gensim Word2Vec
+# - Find economically similar stocks using embedding distance
+# - Understand the bridge between NLP and quantitative finance
+#
+# ## Academic Foundation
+# - **Gabaix, Koijen, Richmond & Yogo (2025)** "Asset Embeddings"
+#   NBER WP 33651. They show portfolio holdings contain "all relevant information
+#   for asset pricing" and demonstrate Word2Vec, BERT, and recommender systems
+#   on institutional holdings data.
+#
+# ## Prerequisites
+# - Section 10.2 of the chapter (distributional hypothesis, Word2Vec).
+# - `01_word2vec_training.py` for the Skip-gram mechanics on text.
+# - 13F bulk 2024Q3 holdings panel under `data/equities/positioning/13f/bulk/2024Q3/`
+#   (downloaded via `data/equities/positioning/13f_download.py --mode bulk --quarters 2024Q3`).
+
+# %%
+"""Asset Embeddings: Word2Vec Applied to Portfolios - train stock embeddings from institutional 13F holdings data."""
+
+import json
+import warnings
+from dataclasses import dataclass
+
+import matplotlib.pyplot as plt
+import numpy as np
+import polars as pl
+from gensim.models import Word2Vec
+
+from data import load_13f_stock_features
+from utils.config import ML4T_DATA_PATH
+from utils.paths import get_chapter_dir
+from utils.reproducibility import set_global_seeds
+from utils.style import COLORS, FIGSIZE, show_with_alt
+
+# gensim builds its Cython extensions against an older NumPy ABI and reaches scipy through
+# a deprecated path. Both are import-time and neither can report a problem with the
+# arithmetic below, which stays visible.
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="gensim")
+warnings.filterwarnings("ignore", category=UserWarning, module="gensim")
+
+# %% tags=["parameters"]
+# Production defaults - Papermill injects overrides for CI
+SEED = 42
+MAX_INSTITUTIONS = 500  # top-K institutions by holdings count from 2024Q3 bulk filing
+QUARTER = "2024Q3"
+
+# %%
+# Reproducibility - single source of seeds for Python random, NumPy, and (if installed) Torch.
+set_global_seeds(SEED)
+
+CONFIG = {
+    "random_seed": SEED,
+    "embedding_dim": 100,
+    "window_size": 5,
+    "min_count": 5,
+    "sg": 1,  # Skip-gram
+    "epochs": 10,
+    "workers": 1,  # Single worker for reproducibility (multi-threaded Word2Vec is non-deterministic)
+    "benchmark": {
+        "position_ranges": [(2, 10), (10, 50), (50, 200)],
+        "samples_per_range": 25,
+        "bootstrap_iterations": 1000,
+    },
+}
+
+print("=" * 70)
+print("EXPERIMENT CONFIGURATION")
+print("=" * 70)
+print(json.dumps(CONFIG, indent=2))
+print("=" * 70)
+
+
+# %% [markdown]
+# ## The Core Insight: Portfolios as Sentences
+#
+# In NLP, Word2Vec learns that words appearing in similar contexts have similar
+# meanings. The **skip-gram** objective predicts context words given a target word.
+#
+# Gabaix et al. (2025) apply this to portfolios:
+#
+# | NLP Domain | Finance Domain |
+# |------------|----------------|
+# | Sentence | Portfolio (stocks ordered by weight) |
+# | Word | Stock |
+# | Context window | Nearby positions (similar weights) |
+# | Similar meaning | Similar investment characteristics |
+#
+# **Key insight**: Investors assign similar portfolio weights to stocks with
+# similar characteristics. If AAPL and MSFT often appear as the 2nd and 3rd
+# largest positions in tech-focused portfolios, they should have similar embeddings.
+
+# %% [markdown]
+# ## Load and Prepare Holdings Data
+#
+# Every institutional investor managing over $100M must file quarterly 13F-HR
+# disclosures with the SEC. We use the bulk 2024Q3 filing window and select the
+# largest 500 institutions by number of holdings - enough portfolios to give
+# Word2Vec a meaningful co-occurrence signal, while keeping training tractable.
+
+# %%
+bulk_path = (
+    ML4T_DATA_PATH
+    / "equities"
+    / "positioning"
+    / "13f"
+    / "bulk"
+    / QUARTER
+    / "institutional_holdings.parquet"
+)
+print(f"Loading 13F bulk holdings from {bulk_path.relative_to(ML4T_DATA_PATH)}...")
+holdings_full = pl.read_parquet(bulk_path)
+print(
+    f"Loaded: {holdings_full.height:,} holdings across {holdings_full['cik'].n_unique():,} institutions"
+)
+
+# Pick the top-K institutions by holdings count - this favours diversified funds
+# whose portfolios provide the richest co-occurrence signal.
+institution_sizes = holdings_full.group_by("cik").len().sort("len", descending=True)
+selected_ciks = institution_sizes.head(MAX_INSTITUTIONS)["cik"].to_list()
+holdings = holdings_full.filter(pl.col("cik").is_in(selected_ciks))
+
+print(
+    f"Selected top-{MAX_INSTITUTIONS:,} institutions: {holdings.height:,} holdings, "
+    f"{holdings['cusip'].n_unique():,} unique stocks"
+)
+
+stock_features = load_13f_stock_features()
+cusip_to_name = dict(zip(stock_features["cusip"], stock_features["issuer_name"], strict=False))
+# Augment from bulk holdings issuer column for stocks not in the curated stock_features file
+for cusip, name in zip(holdings["cusip"].to_list(), holdings["issuer"].to_list(), strict=False):
+    if cusip and cusip not in cusip_to_name and name:
+        cusip_to_name[cusip] = name
+print(f"Stocks with name metadata: {len(cusip_to_name):,}")
+
+# %%
+# Top institutions by total reported holding value.
+holdings.group_by("company_name").agg(
+    pl.col("value_thousands").sum().alias("total_value_kusd"),
+    pl.col("cusip").n_unique().alias("n_positions"),
+).sort("total_value_kusd", descending=True).head(10)
+
+# %% [markdown]
+# ## Create Portfolio Sentences
+#
+# Following Gabaix et al. (2025), we convert each portfolio into a "sentence":
+# 1. Group holdings by institution (CIK)
+# 2. For each institution, order stocks by holding value (descending)
+# 3. The ordered list of stock IDs becomes a "sentence"
+#
+# This preserves the key insight: stocks with similar portfolio weights
+# (similar "positions" in the sentence) should have similar embeddings.
+
+# %% [markdown]
+# One sentence per institution, and the deduplication matters. A single filer can submit
+# several 13F-HR filings in one quarter - amendments, or separate subsidiaries - so the same
+# stock appears more than once for the same `cik`. Left in, those duplicates would put a
+# stock next to itself in its own sentence and teach the model that it co-occurs with itself.
+# Collapsing to the largest reported value per pair removes that before the ordering is taken.
+
+
+# %%
+portfolio_positions = (
+    holdings.group_by(["cik", "cusip"])
+    .agg(pl.col("value_thousands").max())
+    .sort(["cik", "value_thousands"], descending=[False, True])
+)
+
+portfolio_sentences = portfolio_positions.group_by("cik", maintain_order=True).agg(
+    pl.col("cusip").alias("stocks")
+)
+
+sentences = portfolio_sentences["stocks"].to_list()
+sentence_lengths = [len(s) for s in sentences]
+
+print(f"Number of portfolios (institutions): {len(sentences):,}")
+print(f"Total stock-position pairs:        {sum(sentence_lengths):,}")
+print(
+    f"Portfolio size - min / median / max: {min(sentence_lengths)} / "
+    f"{int(np.median(sentence_lengths))} / {max(sentence_lengths)}"
+)
+
+# %%
+# Show the first portfolio's top-10 positions as a readable preview.
+preview_cik = portfolio_sentences["cik"][0]
+preview_name = holdings.filter(pl.col("cik") == preview_cik)["company_name"].first()
+preview_rows = [
+    {"position": i + 1, "cusip": cusip, "issuer": cusip_to_name.get(cusip, "Unknown")[:40]}
+    for i, cusip in enumerate(sentences[0][:10])
+]
+print(f"\nPreview portfolio: {preview_name} (CIK {preview_cik}) - top-10 positions")
+pl.DataFrame(preview_rows)
+
+# %% [markdown]
+# ## Train Word2Vec on Portfolios
+#
+# We use gensim's Word2Vec with the **skip-gram** architecture (sg=1),
+# following the paper's methodology.
+#
+# Key parameters:
+# - `vector_size=100`: Embedding dimension
+# - `window=5`: Context window (positions within 5 of target)
+# - `sg=1`: Skip-gram (predict context from target word)
+# - `min_count=5`: Only stocks appearing in 5+ portfolios
+
+# %%
+# Train Word2Vec
+print("Training Word2Vec on portfolio sentences...")
+
+EMBEDDING_DIM = CONFIG["embedding_dim"]
+WINDOW_SIZE = CONFIG["window_size"]
+MIN_COUNT = CONFIG["min_count"]
+
+model = Word2Vec(
+    sentences=sentences,
+    vector_size=EMBEDDING_DIM,
+    window=WINDOW_SIZE,
+    min_count=MIN_COUNT,
+    sg=CONFIG["sg"],  # Skip-gram
+    workers=CONFIG["workers"],
+    epochs=CONFIG["epochs"],
+    seed=SEED,
+)
+
+print(f"Vocabulary size (stocks): {len(model.wv):,}")
+print(f"Embedding dimension: {model.wv.vector_size}")
+
+# How widely each in-vocab stock is held - used downstream to disambiguate
+# name searches and to pick the most-held stocks for the t-SNE plot.
+occurrence_counts: dict[str, int] = {c: 0 for c in model.wv.key_to_index}
+for sentence in sentences:
+    for cusip in sentence:
+        if cusip in occurrence_counts:
+            occurrence_counts[cusip] += 1
+
+# %% [markdown]
+# ## Why Skip-Gram Works for Portfolios
+#
+# The skip-gram objective learns embeddings by predicting context words from
+# a target word. For portfolios:
+#
+# **Training example**: If Berkshire holds [AAPL, AMEX, KO, BAC, OXY] in order
+# of position size, and we mask position 3 (KO), we predict KO from its
+# context (AMEX position 2, BAC position 4).
+#
+# **Result**: Stocks that appear in similar positions across many portfolios
+# get similar embeddings-they share investment characteristics valued by
+# institutional investors.
+#
+# Gabaix et al. (2025) note: "Investors assign similar portfolio weights to
+# assets with similar asset embeddings, according to portfolio theory."
+
+# %% [markdown]
+# ## Finding Similar Stocks
+#
+# With embeddings learned, we can find stocks closest in embedding space.
+# These are stocks that institutional investors treat similarly.
+
+
+# %%
+import re
+
+
+def neighbours_frame(query: str, top_k: int = 10) -> pl.DataFrame:
+    """Return the top-k embedding neighbours of `query` (CUSIP or whole-word name match)."""
+    if query in model.wv:
+        cusip = query
+    else:
+        # Whole-word match against issuer name to avoid PINEAPPLE matching "APPLE".
+        # Normalize punctuation to spaces first so a space query like "COCA COLA"
+        # also matches hyphenated issuers ("COCA-COLA CO"); the \b guard is kept.
+        pattern = re.compile(rf"\b{re.escape(query.upper())}\b")
+
+        def _norm(name: str) -> str:
+            return re.sub(r"[^A-Z0-9]+", " ", name.upper())
+
+        matching = [c for c, n in cusip_to_name.items() if n and pattern.search(_norm(n))]
+        if not matching:
+            return pl.DataFrame(
+                {
+                    "probe": [query],
+                    "rank": [0],
+                    "cusip": [None],
+                    "issuer": ["<not found>"],
+                    "similarity": [None],
+                }
+            )
+        # Prefer the in-vocabulary match with the largest holding presence (= most-held stock).
+        in_vocab = [c for c in matching if c in model.wv]
+        if in_vocab:
+            in_vocab.sort(key=lambda c: -occurrence_counts.get(c, 0))
+            cusip = in_vocab[0]
+        else:
+            cusip = matching[0]
+    if cusip not in model.wv:
+        return pl.DataFrame(
+            {
+                "probe": [query],
+                "rank": [0],
+                "cusip": [cusip],
+                "issuer": ["<below min_count>"],
+                "similarity": [None],
+            }
+        )
+    label = f"{cusip_to_name.get(cusip, 'Unknown')} ({cusip})"
+    rows = []
+    for rank, (sim_cusip, similarity) in enumerate(
+        model.wv.most_similar(cusip, topn=top_k), start=1
+    ):
+        rows.append(
+            {
+                "probe": label,
+                "rank": rank,
+                "cusip": sim_cusip,
+                "issuer": cusip_to_name.get(sim_cusip, "Unknown")[:40],
+                "similarity": float(similarity),
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+# %%
+neighbour_tables = {
+    query: neighbours_frame(query, top_k=8)
+    for query in ["APPLE", "MICROSOFT", "COCA COLA", "JPMORGAN"]
+}
+
+# Concatenate into one display table.
+pl.concat(neighbour_tables.values())
+
+# %% [markdown]
+# ## Visualizing Asset Embeddings
+#
+# We use t-SNE to project the 100-dimensional embeddings to 2D.
+# Stocks that cluster together share similar institutional ownership patterns.
+
+# %%
+# Get all embeddings
+all_cusips = list(model.wv.key_to_index.keys())
+all_embeddings = np.array([model.wv[c] for c in all_cusips])
+print(f"Visualizing {len(all_cusips):,} stock embeddings...")
+
+# Take top 500 stocks by occurrence count (computed earlier).
+top_cusips = sorted(occurrence_counts.keys(), key=lambda c: occurrence_counts[c], reverse=True)[
+    :500
+]
+# Use dict lookup (O(1)) instead of list.index() (O(n)) for efficiency
+cusip_to_idx = {c: i for i, c in enumerate(all_cusips)}
+top_indices = [cusip_to_idx[c] for c in top_cusips]
+subset_embeddings = all_embeddings[top_indices]
+subset_cusips = [all_cusips[i] for i in top_indices]
+
+print(f"Selected {len(subset_cusips)} most widely-held stocks for visualization")
+
+# %% [markdown]
+# ### Measuring the claim rather than projecting it
+#
+# The claim is that stocks held by the same institutions end up close together. That is a
+# statement about distances in the model's hundred-dimensional space, so measure it there.
+#
+# A two-dimensional projection is the tempting picture and it does not test this. t-SNE
+# distorts the points at the edge of a cloud hardest, and the mega-caps here are exactly
+# those points: run on this subset it presses them all into a single spot against the left
+# boundary, which looks like strong evidence and is a property of the projection.
+#
+# So: take the recognizable mega-caps, measure every pair among them, and compare that
+# against the same stocks' similarity to a random draw from the rest of the widely-held
+# universe. If co-ownership drives the geometry, the first should exceed the second.
+
+# %%
+highlight_keywords = [
+    "APPLE",
+    "MICROSOFT",
+    "NVIDIA",
+    "AMAZON",
+    "GOOGLE",
+    "META",
+    "TESLA",
+    "BERKSHIRE",
+    "JPMORGAN",
+    "EXXON",
+]
+mega_caps = [
+    (c, cusip_to_name.get(c, ""))
+    for c in subset_cusips
+    if cusip_to_name.get(c, "")
+    and any(kw in cusip_to_name.get(c, "").upper() for kw in highlight_keywords)
+]
+mega_cusips = [c for c, _ in mega_caps]
+mega_labels = [name[:18] for _, name in mega_caps]
+print(f"Recognizable mega-caps found in the vocabulary: {len(mega_cusips)}")
+
+others = [c for c in subset_cusips if c not in set(mega_cusips)]
+rng_pairs = np.random.default_rng(SEED)
+comparison = list(rng_pairs.choice(others, size=min(100, len(others)), replace=False))
+
+within = [
+    model.wv.similarity(a, b) for i, a in enumerate(mega_cusips) for b in mega_cusips[i + 1 :]
+]
+across = [model.wv.similarity(a, b) for a in mega_cusips for b in comparison]
+
+print(f"Mean similarity among the mega-caps:        {np.mean(within):.3f}")
+print(f"Mean similarity to other widely-held stocks: {np.mean(across):.3f}")
+
+# %%
+similarity_matrix = np.array(
+    [[model.wv.similarity(a, b) for b in mega_cusips] for a in mega_cusips]
+)
+
+fig, ax = plt.subplots(figsize=FIGSIZE["single_tall"])
+image = ax.imshow(similarity_matrix, cmap="Blues", vmin=0, vmax=1)
+ax.set_xticks(range(len(mega_labels)))
+ax.set_yticks(range(len(mega_labels)))
+ax.set_xticklabels(mega_labels, rotation=90, fontsize=6)
+ax.set_yticklabels(mega_labels, fontsize=6)
+fig.colorbar(image, ax=ax, shrink=0.7, label="Cosine similarity")
+ax.set_title("Cosine similarity among widely recognized holdings")
+
+show_with_alt(
+    fig,
+    "A square matrix of cosine similarities between the embeddings of the large, widely "
+    "recognized companies the vocabulary carries - software and consumer-technology names, a "
+    "bank, an oil major, a carmaker and a conglomerate - with the same names down the side "
+    "and across the bottom in the same order, and a colorbar shaded light at zero to dark at "
+    "one. Drawn to put the co-ownership claim in the model's own space rather than in a "
+    "two-dimensional projection.",
+)
+
+# %% [markdown]
+# The two printed means are the test and the matrix shows its shape. These companies sit
+# close to one another and further from a random draw of other widely-held stocks, which is
+# what co-ownership predicts: an institution large enough to file a 13F holds most of them,
+# so they appear in the same portfolios in the same region of the ordering.
+#
+# The matrix carries something the means do not. It splits into two blocks - the technology
+# names close to one another, the bank, oil major, carmaker and conglomerate forming a
+# looser second group - with lighter cells between them. That is what differentiated
+# co-holding would look like, and it is not a test of it: these nine are all widely held but
+# not equally so, and nothing here holds frequency fixed while varying who holds what. The
+# benchmark below is where the popularity comparison is actually made.
+#
+# It is worth being clear about what that does not establish. These are the most widely held
+# stocks in the sample, so they co-occur with almost everything, and a method that placed all
+# frequent items together for no other reason would produce the same picture. Separating
+# those two explanations needs a baseline that is itself popularity-driven, which the
+# benchmark below adds alongside the uniform-random one.
+
+# %% [markdown]
+# ## Managed Portfolio Benchmark: Masked Asset Prediction
+#
+# This is the key empirical test from Gabaix et al. (2025). The benchmark asks:
+# **Given the rest of a portfolio, can the embeddings name the holding that was removed?**
+#
+# Methodology:
+# 1. For each test portfolio, mask one position (e.g., the 5th largest holding)
+# 2. Use the surrounding context to predict which stock was masked
+# 3. Report accuracy@k: Is the true stock in the top k predictions?
+#
+# This directly tests the Word2Vec hypothesis: stocks appearing in similar
+# portfolio positions should have similar embeddings.
+
+# %%
+# Managed Portfolio Benchmark Introduction
+print("=" * 70)
+print("MANAGED PORTFOLIO BENCHMARK: Masked Asset Prediction")
+print("=" * 70)
+
+# %% [markdown]
+# ### Predict Masked Asset
+# Given a portfolio with one position masked, use surrounding context to predict the hidden stock.
+
+
+# %%
+def predict_masked_asset(portfolio: list, mask_position: int, model, window: int = 5) -> list:
+    """
+    Predict the masked asset using context from surrounding positions.
+
+    Args:
+        portfolio: List of CUSIPs ordered by holding value
+        mask_position: Index of position to mask (0-indexed)
+        model: Trained Word2Vec model
+        window: Context window size
+
+    Returns:
+        List of (cusip, score) tuples for top predictions
+    """
+    if mask_position >= len(portfolio):
+        return []
+
+    # Get context window (positions around the masked one)
+    start = max(0, mask_position - window)
+    end = min(len(portfolio), mask_position + window + 1)
+
+    context = []
+    for i in range(start, end):
+        if i != mask_position and portfolio[i] in model.wv:
+            context.append(portfolio[i])
+
+    if not context:
+        return []
+
+    # Predict using context - average context embeddings and find similar
+    try:
+        predictions = model.wv.most_similar(positive=context, topn=100)
+        return predictions
+    except KeyError:
+        return []
+
+
+# %% [markdown]
+# ### HitRecord and Benchmark Evaluation
+# Track per-sample prediction outcomes and aggregate benchmark metrics.
+
+
+# %%
+@dataclass
+class HitRecord:
+    """Record of a single masked asset prediction outcome."""
+
+    # The index of the portfolio this came from. Positions drawn from one portfolio share its
+    # context, so they are not independent and anything resampling them has to resample
+    # portfolios rather than positions.
+    portfolio: int
+    # The asset that was masked. Kept so a rival predictor can be scored on exactly these
+    # trials rather than on its own sample of positions.
+    target: str
+    bucket: str  # Position range label
+    hit1: int  # 1 if rank <= 1, else 0
+    hit5: int  # 1 if rank <= 5, else 0
+    hit10: int  # 1 if rank <= 10, else 0
+    rr: float  # Reciprocal rank (1/rank if found, 0 otherwise)
+
+
+# %% [markdown]
+# ### Run Benchmark Evaluation
+# Sample masked positions across portfolios and compute accuracy metrics.
+
+
+# %%
+def evaluate_benchmark(
+    portfolios: list,
+    model,
+    position_ranges: list = [(2, 10), (10, 50), (50, 200)],
+    samples_per_range: int = 100,
+) -> tuple[dict, list[HitRecord]]:
+    """
+    Run the masked asset prediction benchmark with robust sampling.
+
+    Since we have few portfolios but many stocks per portfolio, we sample
+    multiple masked positions from each portfolio for statistical power.
+
+    Args:
+        portfolios: List of portfolio sentences
+        model: Trained Word2Vec model
+        position_ranges: List of (start, end) tuples defining position ranges to test
+        samples_per_range: Number of masked positions to sample per range
+
+    Returns:
+        Tuple of (aggregate_metrics_dict, list_of_hit_records)
+        - aggregate_metrics: Dictionary with accuracy metrics by position range
+        - hit_records: Per-sample outcomes for correct bootstrap CI computation
+    """
+    # Collect per-sample hit records for proper bootstrap
+    hit_records: list[HitRecord] = []
+
+    np.random.seed(SEED)
+
+    for portfolio_index, portfolio in enumerate(portfolios):
+        for start, end in position_ranges:
+            label = f"pos_{start + 1}-{end}"
+
+            # Get valid positions in this range
+            valid_positions = [
+                i for i in range(start, min(end, len(portfolio))) if portfolio[i] in model.wv
+            ]
+
+            if not valid_positions:
+                continue
+
+            # Sample positions to test
+            n_samples = min(samples_per_range, len(valid_positions))
+            test_positions = np.random.choice(valid_positions, n_samples, replace=False)
+
+            for mask_pos in test_positions:
+                true_asset = portfolio[mask_pos]
+
+                predictions = predict_masked_asset(portfolio, mask_pos, model)
+                if not predictions:
+                    continue
+
+                # Find rank of true asset
+                pred_cusips = [p[0] for p in predictions]
+                if true_asset in pred_cusips:
+                    rank = pred_cusips.index(true_asset) + 1
+                    hit_records.append(
+                        HitRecord(
+                            portfolio=portfolio_index,
+                            target=true_asset,
+                            bucket=label,
+                            hit1=int(rank <= 1),
+                            hit5=int(rank <= 5),
+                            hit10=int(rank <= 10),
+                            rr=1.0 / rank,
+                        )
+                    )
+                else:
+                    hit_records.append(
+                        HitRecord(
+                            portfolio=portfolio_index,
+                            target=true_asset,
+                            bucket=label,
+                            hit1=0,
+                            hit5=0,
+                            hit10=0,
+                            rr=0.0,
+                        )
+                    )
+
+    # Aggregate metrics from raw records
+    results = {}
+    for start, end in position_ranges:
+        label = f"pos_{start + 1}-{end}"
+        bucket_records = [r for r in hit_records if r.bucket == label]
+        n = len(bucket_records)
+        if n > 0:
+            results[label] = {
+                "hits@1": sum(r.hit1 for r in bucket_records) / n,
+                "hits@5": sum(r.hit5 for r in bucket_records) / n,
+                "hits@10": sum(r.hit10 for r in bucket_records) / n,
+                "mrr": sum(r.rr for r in bucket_records) / n,
+                "total": n,
+            }
+        else:
+            results[label] = {"hits@1": 0, "hits@5": 0, "hits@10": 0, "mrr": 0, "total": 0}
+
+    return results, hit_records
+
+
+# %%
+# Run the benchmark
+SAMPLES_PER_RANGE = CONFIG["benchmark"]["samples_per_range"]
+POSITION_RANGES = CONFIG["benchmark"]["position_ranges"]
+print("\nRunning masked asset prediction benchmark...")
+print(f"Testing position ranges {POSITION_RANGES}")
+print(f"Sampling {SAMPLES_PER_RANGE} positions per range from each portfolio.\n")
+
+benchmark_results, hit_records = evaluate_benchmark(
+    sentences,
+    model,
+    position_ranges=POSITION_RANGES,
+    samples_per_range=SAMPLES_PER_RANGE,
+)
+
+# Display results
+benchmark_table = pl.DataFrame(
+    [
+        {
+            "position_range": label,
+            "hits_at_1": metrics["hits@1"],
+            "hits_at_5": metrics["hits@5"],
+            "hits_at_10": metrics["hits@10"],
+            "mrr": metrics["mrr"],
+            "n": metrics["total"],
+        }
+        for label, metrics in benchmark_results.items()
+    ]
+)
+benchmark_table
+
+# %%
+# Compare to random baseline with bootstrap confidence intervals
+print("\n" + "=" * 70)
+print("COMPARISON TO RANDOM BASELINE (with Bootstrap CI)")
+print("=" * 70)
+
+vocab_size = len(model.wv)
+random_hits1 = 1 / vocab_size
+random_hits5 = 5 / vocab_size
+random_hits10 = 10 / vocab_size
+
+print(f"Vocabulary size: {vocab_size:,} stocks")
+print("\nRandom baseline (analytical):")
+print(f"  Hits@1:  {random_hits1:.4%} (= 1/{vocab_size:,})")
+print(f"  Hits@5:  {random_hits5:.4%} (= 5/{vocab_size:,})")
+print(f"  Hits@10: {random_hits10:.4%} (= 10/{vocab_size:,})")
+
+
+# %% [markdown]
+# ### Bootstrap Confidence Intervals
+# Compute CIs for benchmark metrics using raw per-sample hit records.
+
+
+# %%
+def bootstrap_by_portfolio(
+    records: list, n_iterations: int = 1000, alpha: float = 0.025
+) -> tuple[float, float]:
+    """Percentile interval for the Hits@5 rate, resampling portfolios rather than positions.
+
+    Each portfolio contributes many masked positions drawn from one holdings list with
+    overlapping context windows, so those outcomes move together. Resampling positions would
+    treat them as independent and return an interval narrower than the sampling variation
+    warrants. Resampling whole portfolios keeps each one's positions together.
+    """
+    by_portfolio: dict[int, list[int]] = {}
+    for record in records:
+        by_portfolio.setdefault(record.portfolio, []).append(record.hit5)
+
+    groups = list(by_portfolio.values())
+    rng = np.random.default_rng(SEED)
+    means = []
+    for _ in range(n_iterations):
+        drawn = rng.integers(0, len(groups), len(groups))
+        pooled = [hit for index in drawn for hit in groups[index]]
+        means.append(np.mean(pooled))
+    return float(np.percentile(means, alpha * 100)), float(np.percentile(means, (1 - alpha) * 100))
+
+
+def bootstrap_metrics(
+    hit_records: list[HitRecord], n_iterations: int = 1000, confidence: float = 0.95
+) -> dict:
+    """
+    Compute bootstrap confidence intervals for benchmark metrics.
+
+    Uses raw per-sample hit records for correct uncertainty estimation,
+    preserving the actual sampling distribution rather than reconstructing
+    from aggregate rates.
+
+    Args:
+        hit_records: List of HitRecord with per-sample outcomes
+        n_iterations: Number of bootstrap samples
+        confidence: Confidence level (default 95%)
+
+    Returns:
+        Dictionary with mean and CI for each position bucket
+    """
+    alpha = (1 - confidence) / 2
+
+    # Group records by bucket
+    buckets = {}
+    for record in hit_records:
+        if record.bucket not in buckets:
+            buckets[record.bucket] = []
+        buckets[record.bucket].append(record)
+
+    bootstrap_stats = {}
+    for label, records in buckets.items():
+        if not records:
+            continue
+
+        hits5_indicators = np.array([r.hit5 for r in records])
+        n = len(hits5_indicators)
+
+        lower, upper = bootstrap_by_portfolio(records, n_iterations=n_iterations, alpha=alpha)
+
+        bootstrap_stats[label] = {
+            "mean": np.mean(hits5_indicators),
+            "ci_lower": lower,
+            "ci_upper": upper,
+            "n": n,
+            "n_portfolios": len({r.portfolio for r in records}),
+        }
+
+    return bootstrap_stats
+
+
+print(
+    f"\nBootstrap confidence intervals ({CONFIG['benchmark']['bootstrap_iterations']} iterations):"
+)
+boot_stats = bootstrap_metrics(
+    hit_records, n_iterations=CONFIG["benchmark"]["bootstrap_iterations"]
+)
+
+for label, stats in boot_stats.items():
+    print(
+        f"  {label}: Hits@5 = {stats['mean']:.1%} "
+        f"[95% CI: {stats['ci_lower']:.1%} - {stats['ci_upper']:.1%}] "
+        f"(n={stats['n']})"
+    )
+
+# %% [markdown]
+# ### One number over all of it, pooled rather than averaged
+#
+# A single rate for the whole benchmark has to be computed over the masked positions, not
+# over the buckets. The buckets hold very different numbers of positions, so averaging their
+# three rates would weight a bucket of four thousand the same as one of twelve thousand and
+# report something no set of trials produced.
+#
+# Its confidence interval has to be bootstrapped on the pooled outcomes for the same reason.
+# Averaging the three buckets' interval endpoints yields a pair of numbers with no coverage
+# property at all - it is not an interval for the pooled rate, or for anything else.
+#
+# The resampling unit is the portfolio, not the masked position. Each portfolio supplies up
+# to a hundred positions per bucket, drawn from one holdings list with overlapping context
+# windows, so those outcomes rise and fall together. Resampling positions would treat them as
+# independent and return an interval narrower than the sampling variation warrants.
+#
+# The pooled figure is the one to quote and the least informative one here. It is dominated by
+# the two large deep-position buckets, where the task is hardest, so it understates what the
+# method does near the top of a portfolio and overstates what it does at the bottom. The
+# per-bucket table above is what carries the finding.
+
+# %%
+pooled_hits5 = np.array([r.hit5 for r in hit_records])
+pooled_rate = pooled_hits5.mean()
+pooled_lower, pooled_upper = bootstrap_by_portfolio(
+    hit_records, n_iterations=CONFIG["benchmark"]["bootstrap_iterations"]
+)
+
+print(
+    f"Masked positions scored: {len(pooled_hits5):,} "
+    f"from {len({r.portfolio for r in hit_records}):,} portfolios"
+)
+print(f"Pooled Hits@5: {pooled_rate:.1%} [95% CI: {pooled_lower:.1%} - {pooled_upper:.1%}]")
+print(f"Random baseline Hits@5: {random_hits5:.4%}")
+print(
+    f"Improvement over random: {pooled_rate / random_hits5:.0f}x "
+    f"[95% CI: {pooled_lower / random_hits5:.0f}x - {pooled_upper / random_hits5:.0f}x]"
+)
+
+# %% [markdown]
+# ### The baseline that actually competes
+#
+# Beating a uniform draw over eleven thousand stocks is not evidence of much. The claim worth
+# testing is that the embeddings learned which stocks go together, and the rival explanation
+# is that they learned which stocks are common - so the baseline has to be a predictor that
+# only knows popularity.
+#
+# It is the simplest thing possible: ignore the portfolio entirely and always answer with the
+# five most widely held stocks in the sample.
+#
+# It is scored from the hit records themselves rather than by walking the portfolios again.
+# The benchmark samples a bounded number of positions per bucket per portfolio and skips any
+# whose context window is empty, so re-deriving the trials would produce a different set with
+# different bucket weights - and a comparison across two populations says nothing.
+
+# %%
+most_popular = sorted(occurrence_counts, key=occurrence_counts.get, reverse=True)[:10]
+popular_top5, popular_top10 = set(most_popular[:5]), set(most_popular)
+
+popularity_hits5 = np.array([int(r.target in popular_top5) for r in hit_records])
+popularity_hits10 = np.array([int(r.target in popular_top10) for r in hit_records])
+popularity_rate5 = float(popularity_hits5.mean())
+popularity_rate10 = float(popularity_hits10.mean())
+
+assert len(popularity_hits5) == len(pooled_hits5), "the two predictors must score the same trials"
+
+print(f"Trials scored by both predictors: {len(pooled_hits5):,}")
+print(f"Always answering the five most-held stocks: Hits@5 = {popularity_rate5:.1%}")
+print(f"Always answering the ten most-held stocks:  Hits@10 = {popularity_rate10:.1%}")
+print(f"The embeddings, on the same trials:         Hits@5 = {pooled_rate:.1%}")
+
+# %% [markdown]
+# Both predictors answer the same masked positions, so the two rates are comparable directly.
+# Read the gap between them rather than either one alone: it is what the rest of the
+# portfolio is worth, over and above knowing which stocks are widely held.
+
+# %%
+# Visualize benchmark results
+fig, axes = plt.subplots(1, 2, figsize=FIGSIZE["dual_h_tall"])
+
+# Left: Accuracy by position range
+labels = list(benchmark_results.keys())
+hits5 = [m["hits@5"] for m in benchmark_results.values()]
+hits10 = [m["hits@10"] for m in benchmark_results.values()]
+
+ax = axes[0]
+x = np.arange(len(labels))
+width = 0.35
+ax.bar(x - width / 2, hits5, width, label="Hits@5", color=COLORS["blue"])
+ax.bar(x + width / 2, hits10, width, label="Hits@10", color=COLORS["amber"])
+ax.axhline(
+    y=random_hits5, color=COLORS["neutral"], linestyle="--", label=f"Random@5 ({random_hits5:.2%})"
+)
+ax.set_xlabel("Position in the portfolio, by holding value")
+ax.set_ylabel("Share of masked positions recovered")
+ax.set_title("Hits@5 and Hits@10 by portfolio position")
+ax.set_xticks(x)
+ax.set_xticklabels(labels, rotation=15, fontsize=7)
+ax.legend(fontsize=7)
+ax.set_ylim(0, max(max(hits10), 0.01) * 1.3)
+
+# Right: MRR by position range
+mrrs = [m["mrr"] for m in benchmark_results.values()]
+ax = axes[1]
+ax.bar(x, mrrs, color=COLORS["blue"])
+ax.set_xlabel("Position in the portfolio, by holding value")
+ax.set_ylabel("Mean reciprocal rank")
+ax.set_title("Mean reciprocal rank by portfolio position")
+ax.set_xticks(x)
+ax.set_xticklabels(labels, rotation=15, fontsize=7)
+
+show_with_alt(
+    fig,
+    "Two panels sharing the same three position buckets on their horizontal axes, ordered "
+    "from the largest holdings in a portfolio to the smallest. The left panel has a pair of "
+    "bars per bucket for the two recovery rates named in its legend, against a dashed line "
+    "near zero for the uniform-random baseline; both bars fall steeply from the first bucket "
+    "to the third, and by the third they sit close to that line. The right panel shows mean "
+    "reciprocal rank over the same buckets and falls in the same way.",
+)
+
+# %% [markdown]
+# ## Benchmark Interpretation
+#
+# - **Hits@k**: fraction of times the true masked stock appears in the top-k
+#   nearest neighbours of the surrounding context.
+# - **MRR**: mean reciprocal rank of the true stock; bounded by 1.
+#
+# Two patterns are worth checking against the table above:
+#
+# 1. The position-bucket effect - top positions (the largest holdings) are more
+#    consistently held across funds, so their context is predictive; lower
+#    positions are noisier and Hits@k typically falls.
+# 2. The lift over the analytical random baseline (`5 / vocab_size`) - even a
+#    single-quarter Word2Vec model on 500 portfolios should be one-to-two
+#    orders of magnitude above random, well outside the bootstrap CI.
+#
+# This is the same masked-asset benchmark Gabaix et al. (2025)
+# use to compare Word2Vec, BERT, and recommender-system embeddings.
+
+# %% [markdown]
+# ## Connection to the Paper
+#
+# Gabaix et al. (2025) compare three embedding methods:
+#
+# 1. **Recommender Systems (RS)**: PCA on investor-asset holdings matrix
+# 2. **Word2Vec**: Skip-gram on portfolio sentences (what we did here)
+# 3. **BERT**: Transformer with attention for contextualized embeddings
+#
+# This notebook implements the second of those and reproduces the masked-holding benchmark
+# protocol on a single-quarter 13F snapshot. The paper's own comparisons between the three
+# methods, and its results on valuation variance, are not reproduced here and are not
+# measured by anything above; the takeaways below say which numbers came from where.
+
+# %% [markdown]
+# ## Applications
+#
+# Asset embeddings enable practical applications:
+#
+# ### 1. Stock Substitution
+# Find replacement stocks when constraints prevent trading the original.
+#
+# ### 2. Portfolio Diversification
+# Measure true diversification: positions far apart in embedding space
+# are more diversified than those close together.
+#
+# ### 3. Crowding Detection
+# Track how embeddings evolve; stocks moving toward dense regions
+# may face crowding-related headwinds.
+#
+# ### 4. Risk Modeling
+# Embedding similarity captures relationships not visible in returns covariance.
+
+# %%
+# Demo: Portfolio diversification analysis
+print("\nPortfolio Diversification Analysis")
+print("=" * 50)
+
+# Take 5 random widely-held stocks
+sample_cusips = np.random.choice(subset_cusips[:100], size=5, replace=False)
+sample_names = [cusip_to_name.get(c, "Unknown")[:25] for c in sample_cusips]
+
+print("Sample portfolio:")
+for name in sample_names:
+    print(f"  - {name}")
+
+# Compute pairwise similarities
+sims = []
+for i, c1 in enumerate(sample_cusips):
+    for c2 in sample_cusips[i + 1 :]:
+        sims.append(model.wv.similarity(c1, c2))
+
+print(f"\nAverage pairwise similarity: {np.mean(sims):.3f}")
+print("(Lower = more diversified in terms of institutional ownership patterns)")
+
+# %% [markdown]
+# ## Key Takeaways
+#
+# 1. **Word2Vec applies beyond text**: Portfolios as sentences, stocks as words.
+#
+# 2. **Skip-gram learns from position ordering**: Stocks at similar portfolio
+#    positions (by weight) get similar embeddings.
+#
+# 3. **Gabaix et al. (2025) frame holdings as informationally sufficient** for
+#    asset pricing. This notebook does not reproduce that proof; it
+#    implements one of the paper's embedding methods (Skip-gram on portfolio
+#    sentences) and reproduces the masked-asset benchmark protocol on a
+#    single-quarter 13F snapshot of ~500 portfolios. The notebook's own
+#    measurements are the Hits@k and MRR values printed above, with
+#    bootstrap CIs and the vs-random improvement multiple.
+#
+# 4. **Keep the paper's numbers and the notebook's apart.** Gabaix et al. report results on
+#    valuation variance and a comparison against text-only embeddings that nothing here
+#    measures. This notebook's own measurements are the per-bucket recovery rates, the pooled
+#    rate and its bootstrap interval, and the improvement multiple over the random baseline.
+#    Read the paper for the rest rather than inferring it from these.
+#
+# 5. **Practical applications**: Stock substitution, diversification,
+#    crowding detection, and enhanced risk models.
+
+# %%
+# Save model and results to output directory
+chapter_dir = get_chapter_dir(10)
+output_dir = chapter_dir / "output" / "asset_embeddings"
+output_dir.mkdir(parents=True, exist_ok=True)
+model_path = output_dir / "asset_word2vec.model"
+model.save(str(model_path))
+print(f"\nModel saved to: {model_path}")
+
+# %%
+# JSON artifact for reproducibility verification
+results_artifact = {
+    "config": CONFIG,
+    "data_summary": {
+        "portfolios": len(sentences),
+        "vocabulary_size": len(model.wv),
+        "embedding_dim": EMBEDDING_DIM,
+        "min_count": MIN_COUNT,
+    },
+    "benchmark_results": {
+        label: {
+            "hits_at_5": m["hits@5"],
+            "hits_at_10": m["hits@10"],
+            "mrr": m["mrr"],
+            "n_samples": m["total"],
+        }
+        for label, m in benchmark_results.items()
+    },
+    "random_baseline": {
+        "hits_at_5": random_hits5,
+        "hits_at_10": random_hits10,
+        "vocab_size": vocab_size,
+    },
+    "bootstrap_ci": {
+        label: {
+            "mean": stats["mean"],
+            "ci_lower_95": stats["ci_lower"],
+            "ci_upper_95": stats["ci_upper"],
+            "n": stats["n"],
+        }
+        for label, stats in boot_stats.items()
+    },
+    "popularity_baseline": {
+        "hits5": popularity_rate5,
+        "hits10": popularity_rate10,
+    },
+    "pooled_hits5": {
+        "point_estimate": float(pooled_rate),
+        "ci_lower_95": float(pooled_lower),
+        "ci_upper_95": float(pooled_upper),
+        "n_positions": int(len(pooled_hits5)),
+    },
+    "improvement_over_random": {
+        "point_estimate": float(pooled_rate / random_hits5),
+        "ci_lower_95": float(pooled_lower / random_hits5),
+        "ci_upper_95": float(pooled_upper / random_hits5),
+    },
+}
+
+# %%
+json_file = output_dir / "results.json"
+with open(json_file, "w") as f:
+    json.dump(results_artifact, f, indent=2)
+
+# %%
+# Markdown summary
+results_file = output_dir / "results.md"
+with open(results_file, "w") as f:
+    f.write("# Asset Embeddings Results\n\n")
+    f.write("## Method\n")
+    f.write("- Word2Vec (skip-gram) trained on portfolio sentences\n")
+    f.write("- Portfolios = sentences, stocks = words, position order = word order\n")
+    f.write(f"- Random seed: {SEED}\n\n")
+    f.write("## Data Summary\n")
+    f.write(f"- Portfolios (institutions): {len(sentences):,}\n")
+    f.write(f"- Vocabulary (stocks): {len(model.wv):,}\n")
+    f.write(f"- Embedding dimension: {EMBEDDING_DIM}\n")
+    f.write(f"- Context window: {WINDOW_SIZE}\n")
+    f.write(f"- Min count (stock must appear in N portfolios): {MIN_COUNT}\n\n")
+    f.write("## Managed Portfolio Benchmark\n")
+    f.write("Masked asset prediction (paper's key test for Word2Vec):\n\n")
+    f.write("| Position Range | Hits@5 | 95% CI | Hits@10 | MRR | N |\n")
+    f.write("|----------------|--------|--------|---------|-----|---|\n")
+    for label, m in benchmark_results.items():
+        ci = boot_stats.get(label, {})
+        ci_str = f"[{ci.get('ci_lower', 0):.1%}-{ci.get('ci_upper', 0):.1%}]" if ci else "N/A"
+        f.write(
+            f"| {label} | {m['hits@5']:.1%} | {ci_str} | {m['hits@10']:.1%} | {m['mrr']:.3f} | {m['total']} |\n"
+        )
+    f.write("\n### Random Baseline Comparison\n")
+    f.write(f"- Vocabulary size: {vocab_size:,} stocks\n")
+    f.write(f"- Random Hits@5: {random_hits5:.4%} (= 5/{vocab_size:,})\n")
+    f.write(
+        f"- Pooled Hits@5: {pooled_rate:.1%} "
+        f"[95% CI: {pooled_lower:.1%} - {pooled_upper:.1%}], over {len(pooled_hits5):,} positions\n"
+        f"- **Improvement over random: {pooled_rate / random_hits5:.0f}x** "
+        f"[95% CI: {pooled_lower / random_hits5:.0f}x - {pooled_upper / random_hits5:.0f}x]\n"
+        f"- Always answering the five most-held stocks: Hits@5 = {popularity_rate5:.1%}\n\n"
+    )
+    f.write("## Key Insight\n")
+    f.write("Word2Vec on portfolio data learns stock representations that capture\n")
+    f.write("institutional investor behavior. The masked asset prediction benchmark\n")
+    f.write("demonstrates the method's practical utility for portfolio construction.\n\n")
+    f.write("Reference: Gabaix et al. (2025).\n")
+
+print("Results saved to:")
+print(f"  - {results_file}")
+print(f"  - {json_file}")

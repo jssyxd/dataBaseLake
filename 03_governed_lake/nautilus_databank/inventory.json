@@ -1,0 +1,578 @@
+{
+  "databank_title": "Global Macro Multi-Asset Quantitative Databank (Top 5 Per Category, 2020-2026)",
+  "generated_at": "2026-09-27T15:48:52.654315+00:00",
+  "storage_root": "/run/user/1000/gvfs/smb-share:server=192.168.1.6,share=iflow/\u6570\u636e\u5e935/nautilus_databank",
+  "total_bartypes": 63,
+  "total_bars_count": 42278836,
+  "total_size_mb": 1048.76,
+  "total_size_gb": 1.02,
+  "bartypes": [
+    {
+      "bar_type": "BNBUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2461,
+      "date_range": "2020-01-01 to 2026-09-26",
+      "size_bytes": 166774,
+      "size_mb": 0.16
+    },
+    {
+      "bar_type": "BNBUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 5,
+      "years_range": "2020 to 2024",
+      "rows_count": 2628554,
+      "date_range": "2020-01-01 to 2024-12-31",
+      "size_bytes": 81812618,
+      "size_mb": 78.02
+    },
+    {
+      "bar_type": "BTCUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2461,
+      "date_range": "2020-01-01 to 2026-09-26",
+      "size_bytes": 170084,
+      "size_mb": 0.16
+    },
+    {
+      "bar_type": "BTCUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2887347,
+      "date_range": "2020-01-02 to 2026-02-14",
+      "size_bytes": 85523195,
+      "size_mb": 81.56
+    },
+    {
+      "bar_type": "BZ.ICE-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1694,
+      "date_range": "2020-01-02 to 2026-09-24",
+      "size_bytes": 123742,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "CL.NYMEX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 125489,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "DOGEUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2439592,
+      "date_range": "2020-07-10 to 2026-02-14",
+      "size_bytes": 59795520,
+      "size_mb": 57.03
+    },
+    {
+      "bar_type": "ES.CME-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1695,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 117629,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "ETHUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2461,
+      "date_range": "2020-01-01 to 2026-09-26",
+      "size_bytes": 170924,
+      "size_mb": 0.16
+    },
+    {
+      "bar_type": "ETHUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2887653,
+      "date_range": "2020-01-02 to 2026-02-14",
+      "size_bytes": 81651835,
+      "size_mb": 77.87
+    },
+    {
+      "bar_type": "EURUSD.FX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1705,
+      "date_range": "2020-01-01 to 2026-09-25",
+      "size_bytes": 117113,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "EURUSD.FX-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2276723,
+      "date_range": "2020-01-02 to 2026-02-13",
+      "size_bytes": 57594431,
+      "size_mb": 54.93
+    },
+    {
+      "bar_type": "FDAX.EUREX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1716,
+      "date_range": "2020-01-01 to 2026-09-24",
+      "size_bytes": 129316,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "FESX.EUREX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1695,
+      "date_range": "2020-01-02 to 2026-09-24",
+      "size_bytes": 127160,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "GBPUSD.FX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1710,
+      "date_range": "2020-01-01 to 2026-09-24",
+      "size_bytes": 117559,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "GBPUSD.FX-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2275346,
+      "date_range": "2020-01-02 to 2026-02-13",
+      "size_bytes": 59022902,
+      "size_mb": 56.29
+    },
+    {
+      "bar_type": "GC.COMEX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1695,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 121141,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "GLD.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 840264,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 21045997,
+      "size_mb": 20.07
+    },
+    {
+      "bar_type": "GOLD.METALS-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 1,
+      "years_range": "2026 to 2026",
+      "rows_count": 41210,
+      "date_range": "2026-01-05 to 2026-02-13",
+      "size_bytes": 1151643,
+      "size_mb": 1.1
+    },
+    {
+      "bar_type": "HG.COMEX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1695,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 123168,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "IEF.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 6,
+      "years_range": "2020 to 2025",
+      "rows_count": 587578,
+      "date_range": "2020-01-02 to 2025-12-31",
+      "size_bytes": 13424764,
+      "size_mb": 12.8
+    },
+    {
+      "bar_type": "IWM.ARCA-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 147956,
+      "size_mb": 0.14
+    },
+    {
+      "bar_type": "IWM.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1117000,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 28972407,
+      "size_mb": 27.63
+    },
+    {
+      "bar_type": "NDX.NASDAQ-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 129924,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "NG.NYMEX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1695,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 127024,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "NKD.OSE-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1642,
+      "date_range": "2020-01-05 to 2026-09-24",
+      "size_bytes": 124613,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "NQ.CME-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1695,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 120086,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "PAXG.RWA-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2461,
+      "date_range": "2020-01-01 to 2026-09-26",
+      "size_bytes": 161035,
+      "size_mb": 0.15
+    },
+    {
+      "bar_type": "PAXGUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 5,
+      "years_range": "2020 to 2024",
+      "rows_count": 2283136,
+      "date_range": "2020-08-28 to 2024-12-31",
+      "size_bytes": 57250725,
+      "size_mb": 54.6
+    },
+    {
+      "bar_type": "QQQ.NASDAQ-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 148388,
+      "size_mb": 0.14
+    },
+    {
+      "bar_type": "QQQ.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1304397,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 35304712,
+      "size_mb": 33.67
+    },
+    {
+      "bar_type": "SHY.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 457675,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 9428690,
+      "size_mb": 8.99
+    },
+    {
+      "bar_type": "SILVER.METALS-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2162424,
+      "date_range": "2020-01-02 to 2026-02-13",
+      "size_bytes": 50519480,
+      "size_mb": 48.18
+    },
+    {
+      "bar_type": "SLV.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 877309,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 21004912,
+      "size_mb": 20.03
+    },
+    {
+      "bar_type": "SOFR_TLT.CME-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 147341,
+      "size_mb": 0.14
+    },
+    {
+      "bar_type": "SOLUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2361,
+      "date_range": "2020-04-10 to 2026-09-26",
+      "size_bytes": 164391,
+      "size_mb": 0.16
+    },
+    {
+      "bar_type": "SOLUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 6,
+      "years_range": "2021 to 2026",
+      "rows_count": 2297722,
+      "date_range": "2021-09-18 to 2026-02-14",
+      "size_bytes": 55454766,
+      "size_mb": 52.89
+    },
+    {
+      "bar_type": "SPX.CBOE-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 128929,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "SPY.ARCA-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 148234,
+      "size_mb": 0.14
+    },
+    {
+      "bar_type": "SPY.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1281134,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 34726224,
+      "size_mb": 33.12
+    },
+    {
+      "bar_type": "TLT.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 906788,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 22436147,
+      "size_mb": 21.4
+    },
+    {
+      "bar_type": "TN.CBOT-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1691,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 112017,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "UNG.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 803647,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 19064998,
+      "size_mb": 18.18
+    },
+    {
+      "bar_type": "USDCHF.FX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1711,
+      "date_range": "2020-01-01 to 2026-09-24",
+      "size_bytes": 117872,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "USDCHF.FX-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2272089,
+      "date_range": "2020-01-02 to 2026-02-13",
+      "size_bytes": 56055258,
+      "size_mb": 53.46
+    },
+    {
+      "bar_type": "USDCNY.FX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1715,
+      "date_range": "2020-01-01 to 2026-09-24",
+      "size_bytes": 115918,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "USDJPY.FX-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1653,
+      "date_range": "2020-01-01 to 2026-09-24",
+      "size_bytes": 115686,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "USDJPY.FX-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2276119,
+      "date_range": "2020-01-02 to 2026-02-13",
+      "size_bytes": 57126579,
+      "size_mb": 54.48
+    },
+    {
+      "bar_type": "USO.US_EQUITY-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 789962,
+      "date_range": "2020-01-02 to 2026-03-31",
+      "size_bytes": 19021701,
+      "size_mb": 18.14
+    },
+    {
+      "bar_type": "XAGUSD.METALS-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1694,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 123558,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "XAUCNH.FX-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 2,
+      "years_range": "2025 to 2026",
+      "rows_count": 143616,
+      "date_range": "2025-09-17 to 2026-02-13",
+      "size_bytes": 4390417,
+      "size_mb": 4.19
+    },
+    {
+      "bar_type": "XAUT.RWA-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2424,
+      "date_range": "2020-02-07 to 2026-09-26",
+      "size_bytes": 158920,
+      "size_mb": 0.15
+    },
+    {
+      "bar_type": "XAUUSD.METALS-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1695,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 121469,
+      "size_mb": 0.12
+    },
+    {
+      "bar_type": "XPDUSD.METALS-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1693,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 117670,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "XPDUSD.METALS-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 6,
+      "years_range": "2021 to 2026",
+      "rows_count": 1701154,
+      "date_range": "2021-01-04 to 2026-02-13",
+      "size_bytes": 42783026,
+      "size_mb": 40.8
+    },
+    {
+      "bar_type": "XPTUSD.METALS-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1693,
+      "date_range": "2020-01-02 to 2026-09-24",
+      "size_bytes": 118053,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "XPTUSD.METALS-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 6,
+      "years_range": "2021 to 2026",
+      "rows_count": 1799450,
+      "date_range": "2021-01-04 to 2026-02-13",
+      "size_bytes": 45933905,
+      "size_mb": 43.81
+    },
+    {
+      "bar_type": "XRPUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2461,
+      "date_range": "2020-01-01 to 2026-09-26",
+      "size_bytes": 168243,
+      "size_mb": 0.16
+    },
+    {
+      "bar_type": "XRPUSD.CRYPTO-1-MINUTE-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 2873061,
+      "date_range": "2020-01-02 to 2026-02-14",
+      "size_bytes": 74328962,
+      "size_mb": 70.89
+    },
+    {
+      "bar_type": "ZC.CBOT-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1693,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 111481,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "ZF.CBOT-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 113614,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "ZN.CBOT-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1692,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 111035,
+      "size_mb": 0.11
+    },
+    {
+      "bar_type": "ZT.CBOT-1-DAY-LAST-EXTERNAL",
+      "chunks_count": 7,
+      "years_range": "2020 to 2026",
+      "rows_count": 1693,
+      "date_range": "2020-01-02 to 2026-09-25",
+      "size_bytes": 112010,
+      "size_mb": 0.11
+    }
+  ]
+}

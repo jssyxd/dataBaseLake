@@ -1,0 +1,93 @@
+# ==============================================================================
+# dataBaseLake .gitignore
+# Excludes multi-gigabyte raw/binary datasets while strictly tracking
+# all pipelines, schemas, registries, manifests, docs, and bootstrap tools.
+# ==============================================================================
+
+# Python / Environment Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+env/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+*.lock
+!uv.lock
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Large Binary & Compressed Files (Auto-restored via bootstrap_lake.py)
+*.parquet
+*.csv.gz
+*.bin.zst
+*.sql.zst
+*.db.gz
+*.zip
+*.tar.gz
+*.zst
+*.jsonl
+*.incomplete
+*.dat.gz
+
+# Ignore Big Raw Data Lake Content
+01_raw_lake/huggingface/**
+01_raw_lake/cryptodatadownload/**
+01_raw_lake/github/getdata-finance/**
+01_raw_lake/kaggle/**
+01_raw_lake/github/cenkcorapci_download-lots-of-financial-data/datasets/**
+
+# Ignore Binary Parquet Lake Partitions (Restorable on-demand)
+03_governed_lake/nautilus_databank/catalog/data/**
+03_governed_lake/nautilus_databank/commodities/**
+03_governed_lake/nautilus_databank/crypto/**
+03_governed_lake/nautilus_databank/equities_indices/**
+03_governed_lake/nautilus_databank/fx/**
+03_governed_lake/nautilus_databank/metals/**
+03_governed_lake/nautilus_databank/rates_bonds/**
+03_governed_lake/nautilus_databank/rwa_gold/**
+03_governed_lake/v2_parquet_lake/crypto/**
+03_governed_lake/v2_parquet_lake/global_futures/**
+03_governed_lake/v2_parquet_lake/us_equities/**
+03_governed_lake/v2_parquet_lake/us_futures/**
+02_pipeline_engine/nautilus_crypto_pipeline/catalog/data/**
+02_pipeline_engine/nautilus_crypto_pipeline/releases_dist/**
+
+# Keep Directory Skeletons
+!.gitkeep
+!**/.gitkeep
+
+# Never Ignore Essential Architecture, Governance, & Code Assets
+!*.py
+!*.sh
+!*.sql
+!*.json
+!*.md
+!*.toml
+!*.yaml
+!*.yml
+!data_sources.json
+!bootstrap_lake.py
+!incremental_update.py
+!manifest.schema.json
+!manifest.json
+!inventory.json
+!MANIFEST.md
+!DECISIONS.md
+!LICENSE
+!pyproject.toml
+
+# Ignore large textbook notebooks and uncompressed parquet caches
+01_raw_lake/github/stefan-jansen_machine-learning-for-trading/**/*.ipynb
+*.parquet
+**/daily_bars.parquet

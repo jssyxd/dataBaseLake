@@ -1,0 +1,2673 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: tags,-all
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.3
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # Aggregate Synthesis
+#
+# **Docker image**: `ml4t`
+#
+# This notebook queries all 9 case study registries via `BacktestExplorer`
+# and builds cross-dataset comparison DataFrames for the remaining Ch20 notebooks.
+#
+# **Data source**: `registry.db` per case study (no JSON files needed).
+#
+# **Learning Objectives**:
+# - Query per-case-study backtest registries for signal, allocation, cost, and risk metrics
+# - Build cross-dataset comparison tables
+# - Export summary DataFrames for downstream notebooks (02–06)
+#
+# **Book Reference**: Chapter 20, Section 20.1 (First-pass results across nine case studies)
+#
+# **Prerequisites**: Case studies must have run Ch16–19 backtests.
+
+# %%
+"""Ch20 Aggregate Synthesis — query registries and compare all 9 case studies."""
+
+import json
+import sqlite3
+from functools import cache
+from pathlib import Path
+
+import polars as pl
+import yaml
+from IPython.display import Markdown, display
+
+from case_studies.utils.backtest_explorer import BacktestExplorer
+from case_studies.utils.benchmark import load_benchmark_returns
+from case_studies.utils.strategy_analysis import (
+    allocation_method_of,
+    compute_cost_bps,
+    rank_one,
+    training_run_fitted_for_the_holdout,
+)
+from utils.paths import REPO_ROOT, get_case_study_dir, get_chapter_dir
+
+# %% tags=["parameters"]
+MAX_SYMBOLS = 0
+# When non-empty, restricts the cross-CS iteration to the given subset.
+# Used by the per-CS pipeline driver to populate `backtest_paired_metrics`
+# for a single CS after its holdout has landed, without re-running the
+# full 9-CS aggregation.
+CASE_STUDIES: list[str] = []
+# Test-only: in an isolated test registry, nasdaq's out-of-band cost-feasible
+# selected configuration is absent, so its spine cannot resolve. Production leaves this False
+# (a missing selection fails loudly); the test harness sets it True so cost/risk
+# for such a case study are reported not-applicable instead of raising.
+ALLOW_MISSING_SPINE = False
+# A full-mode run overwrites the nine-case-study artifacts every downstream notebook and the
+# chapter figures read. Refuse to start one unless all nine registries are present and carry
+# backtests, so a partial aggregation cannot be published as a complete one. The test harness
+# sets this False because its isolated registry is not the production store; a subset run
+# (`CASE_STUDIES` non-empty) is the per-case-study driver path and is never full mode.
+REQUIRE_ALL_REGISTRIES = True
+
+# %%
+OUTPUT_DIR = get_chapter_dir(20) / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+ALL_CASE_STUDIES = [
+    "etfs",
+    "crypto_perps_funding",
+    "nasdaq100_microstructure",
+    "sp500_equity_option_analytics",
+    "us_firm_characteristics",
+    # FX rank-1 is linear/ridge_a100.0 on fwd_ret_21d (val Sharpe +0.048,
+    # holdout +0.194), resolved after the 2026-06-01 DL-lookback fix. The
+    # earlier deep_learning/tcn selection (val +0.108 / holdout -1.59) was an
+    # artifact of gappy validation folds (lookback=60 warmup consumed each
+    # fold's head); those sets were purged and the clean lineage re-resolved.
+    # See backtest_audit.md and project_registry_hash_collisions.
+    "fx_pairs",
+    "cme_futures",
+    "sp500_options",
+    "us_equities_panel",
+]
+if CASE_STUDIES:
+    ALL_CASE_STUDIES = [cs for cs in ALL_CASE_STUDIES if cs in set(CASE_STUDIES)]
+
+DISPLAY_NAMES = {
+    "etfs": "ETFs",
+    "crypto_perps_funding": "Crypto",
+    "nasdaq100_microstructure": "NASDAQ-100",
+    "sp500_equity_option_analytics": "S&P 500 Eq+Opt",
+    "us_firm_characteristics": "US Firms",
+    "fx_pairs": "FX Pairs",
+    "cme_futures": "CME Futures",
+    "sp500_options": "S&P 500 Options",
+    "us_equities_panel": "US Equities",
+}
+
+# %%
+ASSET_CLASS_MAP = {
+    "etfs": "equity_etf",
+    "crypto_perps_funding": "crypto",
+    "nasdaq100_microstructure": "equity_micro",
+    "sp500_equity_option_analytics": "equity_options",
+    "us_firm_characteristics": "equity_firm",
+    "fx_pairs": "fx",
+    "cme_futures": "futures",
+    "sp500_options": "options",
+    "us_equities_panel": "equity_panel",
+}
+
+FREQ_MAP = {
+    "etfs": "daily",
+    "crypto_perps_funding": "8h",
+    "nasdaq100_microstructure": "15min",
+    "sp500_equity_option_analytics": "daily",
+    "us_firm_characteristics": "monthly",
+    "fx_pairs": "daily",
+    "cme_futures": "daily",
+    "sp500_options": "daily",
+    "us_equities_panel": "daily",
+}
+
+# %% [markdown]
+# ## Load Registries
+#
+# Create a `BacktestExplorer` for each case study that has a registry.
+
+# %%
+explorers: dict[str, BacktestExplorer] = {}
+configs: dict[str, dict] = {}
+unreadable_registries: list[str] = []
+empty_registries: list[str] = []
+
+for cs in ALL_CASE_STUDIES:
+    try:
+        explorers[cs] = BacktestExplorer(cs)
+        setup_path = get_case_study_dir(cs) / "config" / "setup.yaml"
+        if setup_path.exists():
+            configs[cs] = yaml.safe_load(setup_path.read_text())
+        else:
+            configs[cs] = {}
+        summary = explorers[cs].summary()
+        total = sum(summary.values())
+        if total == 0:
+            empty_registries.append(cs)
+            print(f"  [EMPTY] {cs}: registry.db present, zero backtest runs")
+        else:
+            print(f"  [OK] {cs}: {total} backtests ({summary})")
+    except FileNotFoundError:
+        unreadable_registries.append(cs)
+        print(f"  [MISSING] {cs}: no registry.db")
+
+print(f"\nLoaded: {len(explorers)}/{len(ALL_CASE_STUDIES)} case studies")
+
+# %% [markdown]
+# ### The full-mode precondition
+#
+# This notebook overwrites the nine-case-study artifacts that notebooks 02 through 08 and the
+# chapter figures read. A run that finds only some of the nine registries produces an output
+# indistinguishable from a complete one, and on 2026-08-28 that is exactly what happened: a
+# synthesis run from a worktree carrying three registries stamped itself production and
+# published a holdout Sharpe under prose describing nine case studies. The push gate caught it;
+# the notebook did not.
+#
+# So a full-mode run refuses to continue unless every case study named above has a readable
+# registry holding backtests. A subset run - `CASE_STUDIES` non-empty, the per-case-study
+# driver path that repopulates one case study's paired metrics after its holdout lands - is not
+# full mode and is not covered by the check.
+
+
+# %%
+def refuse_partial_full_mode(
+    *,
+    expected: list[str],
+    subset: list[str],
+    unreadable: list[str],
+    empty: list[str],
+    enforce: bool = True,
+) -> None:
+    """Raise unless a full-mode run can see every registry it claims to aggregate.
+
+    A subset run - ``subset`` non-empty - is the per-case-study driver path and is not
+    full mode, so it is never refused. ``enforce`` is the seeded-test-registry escape and
+    is False in exactly one place, ``tests/overrides.yaml``.
+    """
+    if not enforce or subset or not (unreadable or empty):
+        return
+    raise RuntimeError(
+        f"Full-mode synthesis needs all {len(expected)} registries present and holding "
+        "backtests, and this checkout does not have them. Refusing before anything is "
+        "written, because the artifacts this notebook overwrites are read as a complete "
+        "set covering every case study.\n"
+        f"  no registry.db:      {unreadable or 'none'}\n"
+        f"  zero backtest runs:  {empty or 'none'}\n"
+        "Run this once every case study has registered its backtests and the fleet has "
+        "stopped writing to them. Passing CASE_STUDIES is not a way round this: a subset "
+        "run repopulates one case study's paired metrics in its own registry and writes "
+        "none of the chapter-wide artifacts."
+    )
+
+
+refuse_partial_full_mode(
+    expected=ALL_CASE_STUDIES,
+    subset=CASE_STUDIES,
+    unreadable=unreadable_registries,
+    empty=empty_registries,
+    enforce=REQUIRE_ALL_REGISTRIES,
+)
+
+# %% [markdown]
+# ## Top-Cluster Diagnostics
+#
+# Rather than pre-committing to a single selected configuration per case study, we inspect the
+# *cluster* of top configurations on the validation split. A signal with genuine predictive
+# structure shows a thick top of the distribution: many configurations sit within a
+# fold-standard-error of the top-ranked Sharpe, and the implied pick is insensitive to small
+# perturbations in the selection rule. A thin cluster - a large gap between the top-ranked
+# configuration and the tenth - suggests the top result is closer to a tail draw than to a
+# stable optimum.
+#
+# For each case study we report the top-ranked Sharpe, the tenth-ranked Sharpe where ten
+# configurations exist, the spread between them, the mean per-fold Sharpe, and the number of
+# folds in which the top-ranked configuration has positive Sharpe. These are measurements that
+# feed the downstream narrative.
+#
+# ### The selection rule
+#
+# **A backtest's full strategy specification is the signal method, the allocation method and the
+# risk overlay taken together.** Naming all three is what makes a validation result and a
+# holdout result comparable, because it pins every stage rather than the signal alone.
+#
+# Each case study's selected configuration is the highest-Sharpe validation backtest across
+# those three pipeline stages. The deployed holdout configuration is that same specification,
+# retrained on holdout data. When the holdout retrain produces no usable backtest at it -
+# degenerate predictions, a vol window that does not match the history available, a universe
+# filter that rejects the sample, or another generation failure - the rule falls back to the
+# next-highest validation Sharpe that does have a usable holdout, and so on until one succeeds.
+# The helper implementing that walk feeds the holdout query and the lineage resolver, which pin
+# each validation and holdout pair to one specification.
+
+# %% [markdown]
+# ### Two restrictions, and why the selection needs both
+#
+# **A label restriction**, so the cluster diagnostics and the Chapter 20 holdout retrain rank the
+# same thing. sp500_options trains a hold-to-maturity label with coherent option costs alongside
+# four fixed-horizon straddle labels priced through the vectorized path with a generic
+# basis-point cost. The Chapter 20 narrative uses the hold-to-maturity label as its
+# option-strategy reference, so restricting the cluster diagnostics to that same label keeps the
+# §20.1 top-cluster numbers aligned with the §20.5 and §20.6 narrative.
+#
+# Those two section numbers are right, and they are recorded here because they will not look it.
+# Eleven references in this chapter pointed at sections that exist and do not carry what was
+# claimed, and a sweep for §20.5 in a chapter-20 notebook now finds this one and sees the same
+# shape. It is not the same: §20.5's Table 20.6 carries an sp500_options allocator row, and which
+# row that is depends on the label pinned here; §20.6 carries the option cost model, which is the
+# hold-to-maturity accounting rather than the basis-point sweep the other four labels get. Both
+# targets hold material this restriction decides. Do not retarget it.
+#
+# **An execution-regime restriction**, because sp500_options is evaluated under the
+# O'Donovan-Yu (2025) cost-mitigation cascade, whose three rungs are a naive round trip, full
+# hold-to-maturity, and hold-to-maturity restricted to the liquid bottom-spread quintile. The
+# registered strategy is the third rung; the second is the demoted variant §18.8 discusses. The
+# first two rungs both carry the same universe filter, so filtering on that column
+# alone leaves `ORDER BY sharpe DESC LIMIT 1` free to pick whichever of the two happens to score
+# higher in the current data. Pinning the universe filter *and* the exit rule together is what
+# makes the selected row deterministic and coherent with hold-to-maturity. Case studies with no
+# entry here skip the filter altogether.
+
+# %%
+# The rung pins are imported, not restated. This file used to carry its own copy of both
+# predicates and of the dict around them, verbatim, and `paired_metrics.populate_paired_metrics`
+# carries the other - both write `backtest_paired_metrics`, so a pin corrected on one side only
+# would let one of them overwrite the other's rows with a differently-selected lineage. The
+# duplication is how that drift happens, and the mirror keys beside each predicate
+# (`universe_filter`, `exit_at_max_days`, `label`) exist for the SQL paths and `progression(...)`
+# calls that cannot take a polars expression.
+from case_studies.utils.paired_metrics import RUNG_PINS as _CLUSTER_RUNG_RESTRICTIONS  # noqa: E402
+from case_studies.utils.strategy_analysis import (  # noqa: E402
+    LABEL_RESTRICTIONS as _CLUSTER_LABEL_RESTRICTIONS,
+)
+from case_studies.utils.strategy_analysis import (  # noqa: E402
+    NoSelectableCandidates,
+    resolve_solvent_carrier,
+    selectable_validation_candidates,
+)
+
+
+@cache
+def _canonical_carrier(cs: str) -> dict | None:
+    """The configuration this case study reports, from the resolver that decides it.
+
+    This notebook built the same cross-stage rank-1 by hand in four places - concatenating
+    `explorer.best` over signal, allocation and risk_overlay, dropping benchmark families,
+    applying `LABEL_RESTRICTIONS` and `RUNG_PINS`, and taking the highest Sharpe. Three of
+    them wanted the winner and read it from here; the fourth, `_val_rank1_carrier`, walks the
+    whole field and takes it from `selectable_validation_candidates`, which is the same
+    ranking one step earlier. That is not the ranking the case studies report. `resolve_canonical_rank1_lineage` re-ranks the field
+    on exact common timestamp support whenever a conformal candidate is in it, because a
+    conformal allocator abstains until it is calibrated and books zeros over the abstention,
+    and it applies `UNIVERSE_RESTRICTIONS` and `CARRIER_PINS` besides. Measured 2026-09-18
+    against the nine canonical registries, the two rankings named different configurations on
+    two case studies: `fx_pairs` (`linear/ridge_a1000000.0` at Sharpe 0.4121
+    against `deep_learning/lstm_h64` at comparison Sharpe 0.3091) and
+    `nasdaq100_microstructure` (`deep_learning/nlinear` on fwd_ret_15m at 2.3001 against
+    `gbm/default_multiclass` on fwd_dir_15m at 2.4159). `spine_prediction_hash` is what
+    `05_portfolio_allocation` and Figure 20.7 pin their allocator comparison to, so on
+    `fx_pairs` the chapter compared allocators on a configuration the case study does not
+    report.
+
+    Returns None where the resolver finds nothing selectable, which is the state the
+    hand-built rankings reported as an empty frame. An insolvent or mis-calibrated carrier
+    still raises: it is a sweep to fix, not a case study to skip.
+    """
+    try:
+        return resolve_solvent_carrier(cs)
+    except NoSelectableCandidates:
+        return None
+
+
+def _retired(cs: str) -> frozenset[str]:
+    """Identities a later generation retired, from the same helper `populate_paired_metrics`
+    uses. Both write `backtest_paired_metrics`, so a disagreement here would let a Chapter 20
+    run overwrite the corrected pairs with a retired lineage."""
+    from case_studies.utils.paired_metrics import _retired_prediction_hashes
+
+    return _retired_prediction_hashes(cs)
+
+
+@cache
+def _live_predictions(cs: str) -> list[str] | None:
+    """What this case study currently publishes, or None when it declares no populations.
+
+    Membership, not the complement of retirement. A prediction no population ever listed has
+    not been retired by anyone, so ranking over "everything not retired" admits experimental
+    results the case study never published; ranking over the members in force does not.
+
+    Applied inside the query rather than to its result, because `best()` applies its SQL
+    `LIMIT top_n` first - a row filtered afterwards has already consumed a slot and can hide a
+    live candidate below the cut.
+    """
+    from case_studies.research.population import published_members_at
+
+    published = published_members_at(get_case_study_dir(cs), member_kind="prediction")
+    if published is None:
+        return None
+    if not published:
+        # `best()` tests this argument for truthiness, so an empty list would read as "no
+        # filter" and rank everything. A study that declares populations and publishes
+        # nothing has nothing to report, which is a refusal rather than a wide-open ranking.
+        raise RuntimeError(f"{cs} declares populations but publishes no prediction identities")
+    return sorted(published)
+
+
+def _best_live(explorer: "BacktestExplorer", cs: str, stage: str, top_n: int) -> pl.DataFrame:
+    """`explorer.best` narrowed to what the case study still publishes."""
+    return explorer.best(stage=stage, top_n=top_n, prediction_hashes=_live_predictions(cs))
+
+
+def _best_pinned(explorer: "BacktestExplorer", cs: str, stage: str, top_n: int) -> pl.DataFrame:
+    """`explorer.best` for a stage, fetching enough rows that a rung-restricted
+    cohort survives the post-hoc predicate filter.
+
+    `best()` extracts `universe_filter` from `spec_json` in Python, after the
+    SQL `LIMIT top_n`. For nasdaq the pinned cost-feasible carrier sits below
+    the full-universe in-sample maxima, so a small `top_n` truncates it before
+    `_apply_rung_restriction` runs. Pull all rows for restricted case studies."""
+    live = _live_predictions(cs)
+    if cs in _CLUSTER_RUNG_RESTRICTIONS:
+        return explorer.best(stage=stage, top_n=1_000_000, prediction_hashes=live)
+    return explorer.best(stage=stage, top_n=top_n, prediction_hashes=live)
+
+
+def _apply_rung_restriction(df: pl.DataFrame, cs: str) -> pl.DataFrame:
+    """Filter `df` to the case study's pinned rung, if one is configured.
+
+    Returns the input untouched if no restriction applies. The helper
+    relies on `BacktestExplorer.best()` always emitting both
+    `universe_filter` and `exit_at_max_days` columns; if a future
+    schema regression drops them, the polars `filter` will raise a
+    column-not-found error rather than silently allowing the rank-1
+    selection to drift back to the cross-rung max."""
+    rung = _CLUSTER_RUNG_RESTRICTIONS.get(cs)
+    if rung is None or df.is_empty():
+        return df
+    return df.filter(rung["predicate"])
+
+
+# There is no selected configuration pin here, and there is no mechanism for one.
+# `_CARRIER_PIN_PREDICATES` held `"us_firm_characteristics": pl.col("config_name") ==
+# "default_huber"` until 2026-08-25, copied from `case_studies.utils.strategy_analysis.CARRIER_PINS`
+# and translated into a config-name predicate, under a "keep in sync" comment doing the job a
+# mechanism should.
+#
+# It had not been in sync for a rebuild. Against the current registry `default_huber` is the
+# WEAKEST of the ten configs that reached the allocation stage (48 validation backtests, best
+# Sharpe 2.128, 2.075 average - tenth of ten), while the documented rule selects `leaves_63_mse`
+# (59 backtests, 3.116). So this restricted one case study to its worst advanced configuration
+# while every notebook inside that case study reported its best.
+#
+# Worse than the hash pin removed from `CARRIER_PINS` the same day, because a hash pin dies
+# loudly: every hash changes when a sweep is rebuilt, so it resolves to nothing and stops. A
+# config-name predicate survives the rebuild and keeps selecting, silently and wrongly.
+#
+# The mapping stayed empty behind an `_apply_carrier_pin` that could no longer fire, which is a
+# second implementation of a rule nothing applied. A selected configuration restriction needed here
+# again is `carrier_pins.carrier_config_name(cs)`, which resolves an owner's pin to its config
+# through the registry - the thing the copy existed to avoid, and the thing that would have failed
+# loudly rather than filtering to the wrong config.
+
+
+def _progression_for(
+    explorer: "BacktestExplorer",
+    pred_hash: str,
+    cs: str,
+) -> pl.DataFrame:
+    """Call `progression()` with the case study's rung scope, if any."""
+    rung = _CLUSTER_RUNG_RESTRICTIONS.get(cs)
+    if rung is None:
+        return explorer.progression(pred_hash)
+    return explorer.progression(
+        pred_hash,
+        universe_filter=rung["universe_filter"],
+        exit_at_max_days=rung["exit_at_max_days"],
+    )
+
+
+# Stages whose registry numbers should never be reported for a case study,
+# either because the strategy makes the stage structurally meaningless (HTM
+# short-straddle has no allocator choice, no bps cost sweep) or because the
+# legacy registry contains deprecated entries that pre-date the strategy
+# redesign. Consumed by both `build_backtest_rows` and the `synthesis_dict`
+# sanitizer below so the in-notebook attrition funnel and the JSON artifact
+# cannot drift on the same case study.
+_STAGES_NOT_APPLICABLE: dict[str, set[str]] = {
+    "sp500_options": {"costs", "risk"},
+    "us_firm_characteristics": {"risk"},
+    "nasdaq100_microstructure": {"allocation", "costs", "risk"},
+}
+
+# Per-CS rationale strings for `not_applicable_reason` fields written into
+# `synthesis_dict`. Keyed by (cs, stage) so two case studies that skip the
+# same stage for different structural reasons render different prose.
+_STAGE_NA_REASONS: dict[tuple[str, str], str] = {
+    ("sp500_options", "allocation"): ("HTM short-straddle has fixed 1/n_roll cohort weighting"),
+    ("sp500_options", "costs"): ("option costs use §18.8 bid-ask accounting, not bps sweep"),
+    ("sp500_options", "risk"): ("HTM expiration structure sets risk profile"),
+    ("us_firm_characteristics", "risk"): (
+        "vectorized-engine path; portfolio overlays purged 2026-05-17"
+    ),
+    ("nasdaq100_microstructure", "allocation"): (
+        "carrier is a signal-stage slot strategy; the slot mechanism is the sizing rule"
+    ),
+    ("nasdaq100_microstructure", "costs"): (
+        "timing-corrected broad carrier cost grid deferred to v3.1"
+    ),
+    ("nasdaq100_microstructure", "risk"): (
+        "timing-corrected broad carrier risk grid deferred to v3.1"
+    ),
+}
+
+
+def _stage_applicable(cs: str, stage: str) -> bool:
+    """Return False if `cs` has stage `stage` declared not applicable.
+
+    `stage` must be one of the canonical labels used by
+    ``_STAGES_NOT_APPLICABLE`` itself (`allocation`, `costs`, `risk`).
+    Callers in this notebook always pass canonical literals."""
+    return stage not in _STAGES_NOT_APPLICABLE.get(cs, set())
+
+
+# %%
+cluster_rows = []
+for cs, explorer in explorers.items():
+    top = _best_pinned(explorer, cs, "signal", 200)
+    if top.is_empty() or top["sharpe"][0] is None:
+        continue
+    if "family" in top.columns:
+        top = top.filter(pl.col("family") != "benchmark")
+    label_restriction = _CLUSTER_LABEL_RESTRICTIONS.get(cs)
+    if label_restriction and "label" in top.columns:
+        top = top.filter(pl.col("label").is_in(list(label_restriction)))
+    top = _apply_rung_restriction(top, cs)
+    if top.is_empty() or top["sharpe"][0] is None:
+        continue
+    rank1 = top["sharpe"][0]
+    rank10 = top["sharpe"][9] if top.height >= 10 else None
+    spread = (rank1 - rank10) if rank10 is not None else None
+    # Fold-level stability for the rank-1 backtest
+    try:
+        bt_hash = top["backtest_hash"][0]
+        fold_df = explorer.fold_performance(bt_hash)
+        if not fold_df.is_empty():
+            mean_fold_sh = float(fold_df["sharpe"].mean())
+            se_fold_sh = (
+                float(fold_df["sharpe"].std(ddof=1) / (fold_df.height**0.5))
+                if fold_df.height > 1
+                else None
+            )
+            n_folds_pos = int(fold_df.filter(pl.col("sharpe") > 0).height)
+            n_folds = fold_df.height
+        else:
+            mean_fold_sh, se_fold_sh, n_folds_pos, n_folds = None, None, 0, 0
+    except Exception:
+        mean_fold_sh, se_fold_sh, n_folds_pos, n_folds = None, None, 0, 0
+
+    cluster_rows.append(
+        {
+            "case_study": DISPLAY_NAMES.get(cs, cs),
+            "cs_id": cs,
+            "rank1_sharpe": rank1,
+            "rank10_sharpe": rank10,
+            "rank1_rank10_spread": spread,
+            "mean_per_fold_sharpe": mean_fold_sh,
+            "fold_sharpe_se": se_fold_sh,
+            "n_folds_pos": n_folds_pos,
+            "n_folds": n_folds,
+            "n_configs": int(top.height),
+        }
+    )
+
+cluster_df = pl.DataFrame(cluster_rows)
+if not cluster_df.is_empty():
+    print("\n=== Rank-1 Cluster Diagnostics (validation) ===")
+    print(
+        cluster_df.select(
+            "case_study",
+            "rank1_sharpe",
+            "rank10_sharpe",
+            "rank1_rank10_spread",
+            "mean_per_fold_sharpe",
+            "fold_sharpe_se",
+            "n_folds_pos",
+            "n_folds",
+            "n_configs",
+        )
+    )
+
+# %% [markdown]
+# Read the table as a tuple: (rank1 Sharpe, rank10 Sharpe, spread, fold-SE,
+# folds-positive). A small rank1→rank10 spread relative to the fold-SE signals
+# a thick top-of-distribution. Folds-positive close to the total fold count
+# signals temporal stability. Both can be read off per case study without
+# collapsing the evidence into a single label.
+
+# %% [markdown]
+# ## Overview Table
+#
+# The nine case studies differ in asset class, rebalancing frequency, universe
+# size, and the cost assumption each one carries. The table records those four
+# properties so that a later result can be attributed to the setting it was
+# measured in rather than to the model that produced it.
+
+# %%
+overview_rows = []
+for cs, explorer in explorers.items():
+    setup = configs.get(cs, {})
+    cost_bps = compute_cost_bps(setup)
+    universe = setup.get("universe", {})
+    # A futures universe is sized in products rather than in assets, so
+    # cme_futures declares `n_products` where the others declare `n_assets`.
+    # Reading only the latter reported that case study as an empty universe.
+    n_assets = (
+        universe.get("n_assets")
+        or universe.get("n_products")
+        or len(universe.get("symbols", []))
+        or 0
+    )
+    primary_label = setup.get("labels", {}).get("primary", "")
+
+    families = explorer.compare_families(stage="signal")
+
+    overview_rows.append(
+        {
+            "case_study": DISPLAY_NAMES.get(cs, cs),
+            "cs_id": cs,
+            "asset_class": ASSET_CLASS_MAP.get(cs, "unknown"),
+            "frequency": FREQ_MAP.get(cs, "daily"),
+            "universe": n_assets,
+            "primary_label": primary_label,
+            "cost_bps": cost_bps,
+            "n_model_families": len(families) if not families.is_empty() else 0,
+        }
+    )
+
+overview_df = pl.DataFrame(overview_rows)
+overview_df.select("case_study", "asset_class", "frequency", "universe", "cost_bps")
+
+# %% [markdown]
+# The test bed covers equity ETFs, crypto perpetuals, intraday microstructure, equity plus
+# options, firm characteristics, FX, futures, pure options, and a broad equity panel. The
+# `cost_bps` column of the table above records the transaction-cost assumption each one
+# carries, so a later result can be read against the cost regime it was measured under.
+
+# %% [markdown]
+# ## Model IC Comparison
+#
+# Mean IC by model family across case studies, queried from `prediction_metrics`.
+# Each cell shows the average IC across all configurations within a family,
+# filtered to each case study's primary label.
+
+# %%
+ic_rows = []
+for cs, explorer in explorers.items():
+    case_dir = get_case_study_dir(cs)
+    db_path = case_dir / "run_log" / "registry.db"
+    if not db_path.exists():
+        continue
+
+    # Filter by primary label so IC values match book prose
+    primary_label = configs.get(cs, {}).get("labels", {}).get("primary", "")
+
+    db = sqlite3.connect(str(db_path))
+    # Best IC per family on primary label only
+    # Exclude causal_dml: it estimates treatment effects, not predictive IC.
+    # NOTE: best_ic and best_ic_daily are independent per-family MAXes — they may
+    # come from *different* predictions. This is intentional ("best daily IC in
+    # the family"), not "the daily IC of the best-by-fold model".
+    query = """
+        SELECT t.family, MAX(pm.ic_mean) AS best_ic,
+               MAX(pm.ic_mean_daily) AS best_ic_daily,
+               AVG(pm.ic_mean) AS mean_ic, COUNT(*) AS n_preds
+        FROM training_runs t
+        JOIN prediction_sets p ON t.training_hash = p.training_hash
+        JOIN prediction_metrics pm ON p.prediction_hash = pm.prediction_hash
+        WHERE p.split != 'holdout'
+          AND pm.ic_mean IS NOT NULL
+          AND t.family != 'causal_dml'
+    """
+    params: tuple = ()
+    if primary_label:
+        query += "      AND t.label = ?\n"
+        params = (primary_label,)
+    query += "    GROUP BY t.family"
+
+    rows = db.execute(query, params).fetchall()
+    db.close()
+
+    for family, best_ic, best_ic_daily, mean_ic, n_preds in rows:
+        ic_rows.append(
+            {
+                "case_study": DISPLAY_NAMES.get(cs, cs),
+                "family": family,
+                "ic_mean": mean_ic,
+                "ic_best": best_ic,
+                "ic_best_daily": best_ic_daily,
+                "n_predictions": n_preds,
+            }
+        )
+
+ic_df = pl.DataFrame(ic_rows)
+
+# %%
+if not ic_df.is_empty():
+    ic_pivot = ic_df.pivot(on="family", index="case_study", values="ic_mean").sort("case_study")
+else:
+    ic_pivot = pl.DataFrame()
+
+# %% [markdown]
+# ### Mean IC by Model Family
+
+# %%
+ic_pivot
+
+# %% [markdown]
+# Each cell is the mean of `ic_mean` over that family's non-holdout prediction sets, taken at
+# the primary label the case study declares in `setup.yaml`, with `causal_dml` excluded because
+# its runs are not fit to predict. Families are comparable within a row, since the label is
+# fixed across the row; they are not comparable across rows, because each case study declares a
+# different primary label, from a fifteen-minute forward return to a twenty-one-day one, and
+# prices a different instrument. A negative mean IC marks a case study where prediction is
+# difficult under that label rather than a defect in the family. §20.3 carries this table as
+# Table 20.4, and §20.6 works through how an option case study's raw IC translates into Sharpe
+# once single-name execution costs are charged.
+
+# %% [markdown]
+# ## Backtest Comparison
+#
+# Cross-dataset comparison of pipeline outcomes. Each row takes the highest-Sharpe result at
+# each stage **independently**, so the signal that tops one column may come from a different
+# model than the allocation that tops the next.
+
+
+# %%
+def build_backtest_rows():
+    """Build backtest comparison rows from all case study explorers."""
+    bt_rows = []
+    for cs, explorer in explorers.items():
+        summary = explorer.summary()
+
+        # Best signal-stage result — exclude benchmark families (equal_weight,
+        # etc.) since §20.4's model comparison is about trained models, not
+        # passive baselines. Also apply case-study label and universe-filter
+        # restrictions so the Ch20 rank-1 is HTM-coherent for sp500_options
+        # and pinned to the Rung-3 liquid subset, which is what
+        # `strategy_analysis.UNIVERSE_RESTRICTIONS` holds ({"sp500_options":
+        # "liquid"}). The Rung-2 full universe is retained only for the §18.8
+        # cascade comparison and never anchors the deployed carrier.
+        label_restriction = _CLUSTER_LABEL_RESTRICTIONS.get(cs)
+        signal_candidates = _best_pinned(explorer, cs, "signal", 200)
+        if not signal_candidates.is_empty() and "family" in signal_candidates.columns:
+            signal_candidates = signal_candidates.filter(pl.col("family") != "benchmark")
+        if (
+            label_restriction
+            and "label" in signal_candidates.columns
+            and not signal_candidates.is_empty()
+        ):
+            signal_candidates = signal_candidates.filter(
+                pl.col("label").is_in(list(label_restriction))
+            )
+        signal_candidates = _apply_rung_restriction(signal_candidates, cs)
+        best_signal = signal_candidates.head(1)
+        signal_sharpe = best_signal["sharpe"][0] if not best_signal.is_empty() else None
+        best_source = best_signal["source"][0] if not best_signal.is_empty() else ""
+
+        # Carrier-pred pin for cost/risk. Case studies with a rung restriction
+        # (nasdaq cost-feasible ensemble) carry their headline cost/risk on the
+        # selected prediction only; the full-universe sweep rows are the
+        # Ch18/Ch19 cost-defeat demonstration and must not pool into the
+        # cross-case comparison. Other case studies pass None (no pin) and keep
+        # the registry-wide aggregation unchanged.
+        carrier_pred = (
+            best_signal["prediction_hash"][0]
+            if cs in _CLUSTER_RUNG_RESTRICTIONS and not best_signal.is_empty()
+            else None
+        )
+
+        # Best allocation-stage result (same filters). For case studies that
+        # declare the allocation stage not applicable (e.g. sp500_options HTM),
+        # the registry numbers come from deprecated runs, so report None to
+        # match the synthesis_dict sanitizer below.
+        if _stage_applicable(cs, "allocation"):
+            alloc_candidates = _best_live(explorer, cs, "allocation", 200)
+            if not alloc_candidates.is_empty() and "family" in alloc_candidates.columns:
+                alloc_candidates = alloc_candidates.filter(pl.col("family") != "benchmark")
+            if (
+                label_restriction
+                and "label" in alloc_candidates.columns
+                and not alloc_candidates.is_empty()
+            ):
+                alloc_candidates = alloc_candidates.filter(
+                    pl.col("label").is_in(list(label_restriction))
+                )
+            alloc_candidates = _apply_rung_restriction(alloc_candidates, cs)
+            best_alloc = alloc_candidates.head(1)
+            alloc_sharpe = best_alloc["sharpe"][0] if not best_alloc.is_empty() else None
+            # The allocator that produced `alloc_sharpe`, read from that row's own spec, so
+            # the name and the number describe one configuration. See
+            # `strategy_analysis.allocation_method_of`.
+            best_allocator = allocation_method_of(
+                cs, best_alloc["backtest_hash"][0] if not best_alloc.is_empty() else None
+            )
+        else:
+            alloc_sharpe = None
+            best_allocator = ""
+
+        # Cost sensitivity (gated by stage policy)
+        survives_costs = None
+        if _stage_applicable(cs, "costs"):
+            cost_df = explorer.cost_sensitivity(prediction_hash=carrier_pred)
+            if not cost_df.is_empty():
+                zero_cost = cost_df.filter(pl.col("cost_bps") == 0)
+                survives_costs = not zero_cost.is_empty() and zero_cost["sharpe"].max() > 0
+
+        # Risk overlay (gated by stage policy)
+        best_overlay = ""
+        managed_sharpe = None
+        if _stage_applicable(cs, "risk"):
+            risk_df = explorer.risk_impact(prediction_hash=carrier_pred)
+            if not risk_df.is_empty():
+                # rank_one, not a one-key sort: overlays that never trigger book the
+                # baseline Sharpe exactly, so ties at the top are ordinary here and a
+                # one-key sort would let frame order decide the name reported below.
+                best_risk_row = rank_one(risk_df, by="sharpe", name="risk_name")
+                best_overlay = best_risk_row["risk_name"][0]
+                managed_sharpe = best_risk_row["sharpe"][0]
+
+        # Spine rank-1 prediction_hash - the configuration the case study reports, taken
+        # from `_canonical_carrier` rather than ranked a second time here. Figure 20.7 and
+        # `05_portfolio_allocation` both read this value, and Ch20 prose Tables 20.5-20.7
+        # quote the resolver, so the two have to be one answer.
+        _carrier = _canonical_carrier(cs)
+        spine_pred_hash = _carrier["val_prediction_hash"] if _carrier else None
+
+        bt_rows.append(
+            {
+                "case_study": DISPLAY_NAMES.get(cs, cs),
+                "case_study_id": cs,
+                "spine_prediction_hash": spine_pred_hash,
+                "n_signal": summary.get("signal", 0),
+                "n_allocation": summary.get("allocation", 0),
+                "n_cost": summary.get("cost_sensitivity", 0),
+                "n_risk": summary.get("risk_overlay", 0),
+                "best_source": best_source,
+                "signal_sharpe": signal_sharpe,
+                "best_allocator": best_allocator,
+                "alloc_sharpe": alloc_sharpe,
+                "survives_costs": survives_costs,
+                "best_overlay": best_overlay,
+                "managed_sharpe": managed_sharpe,
+            }
+        )
+    return bt_rows
+
+
+# %%
+bt_rows = build_backtest_rows()
+
+# %%
+bt_df = pl.DataFrame(bt_rows)
+print("\nPipeline Comparison:")
+print(
+    bt_df.select(
+        "case_study",
+        "signal_sharpe",
+        "alloc_sharpe",
+        "survives_costs",
+        "managed_sharpe",
+    )
+)
+
+# %% [markdown]
+# Read the baseline column of the table above for how many case studies enter the pipeline with
+# a positive baseline-stage Sharpe and which do not. Those counts move whenever a registry is
+# rebuilt, which is why they are in the table rather than in this sentence.
+#
+# The lineage table below traces each selected prediction across the stages in the order the
+# backtests run: baseline, allocation, risk overlay, then the cost sweep charged against
+# whatever survived. A Sharpe that rises from one column to the next is what that stage added,
+# and only where the later stage carries the earlier one's configuration - the paired rows above
+# say which transitions meet that test. NASDAQ-100 is excluded from that comparison in v3.0
+# because its timing-corrected broad cost and risk grids are deferred to v3.1.
+
+# %% [markdown]
+# ## Paired-Bootstrap Comparison vs Equal-Weight Benchmark
+#
+# Each case study's selected baseline-stage backtest, under the same label, universe-filter and
+# rung restrictions used for the cluster diagnostics, is compared to its equal-weight benchmark
+# using a **paired stationary block bootstrap on daily strategy returns**. Block length is derived from
+# ``setup.yaml.labels.{label}.rebalance_step`` (falling back to the optimal
+# block size, never below the label horizon). Reported quantities:
+#
+# - ``sharpe_diff`` with a bootstrap confidence interval
+# - ``ret_diff``, the annualized return difference, with its confidence interval
+# - ``info_ratio`` of the daily-return difference
+# - ``prob_challenger_wins`` — bootstrap fraction in which challenger Sharpe
+#   exceeds the benchmark
+# - ``p_value`` — two-sided bootstrap p-value for ``sharpe_diff = 0``
+#
+# Results land in ``backtest_paired_metrics`` (per case study) and roll up
+# into the cross-dataset table below. Intervals are at the conventional confidence level the
+# bootstrap call sets. This is the right unit of uncertainty for the headline claim about the
+# selected configuration: the Sharpe **difference against the passive baseline that experienced
+# the same market conditions**, rather than the Sharpe alone.
+
+
+# %%
+def _benchmark_returns_from_artifact(
+    cs: str, label: str, period: str = "overall"
+) -> tuple[str, pl.DataFrame, str] | None:
+    """Resolve the side-artifact equal-weight benchmark for ``(cs, label)``.
+
+    The benchmark is the daily-MTM EW reference series persisted by
+    ``scripts/compute_vectorized_ew_benchmark.py`` at
+    ``case_studies/{cs}/benchmark/{label}.parquet``. Single, well-defined
+    methodology per (cs, label) — no universe/rung/cadence ambiguity that
+    a registry-side ``family='benchmark'`` lookup would have to disambiguate.
+
+    ``period`` selects the time window slice (``"overall"`` or ``"holdout"``)
+    applied by ``load_benchmark_returns``. Classification-label fallback to
+    the matching ``fwd_ret_*`` artifact applies in both periods.
+
+    Returns ``(synthetic_hash, returns_df, resolved_label)`` where
+    ``synthetic_hash`` is a deterministic identifier safe to use as the PK
+    column in ``backtest_paired_metrics`` (which has no FK on
+    ``benchmark_hash``) and ``resolved_label`` is the actual label whose
+    artifact was loaded — equal to ``label`` unless the classification
+    fallback fired, in which case it's the matching ``fwd_ret_*`` label.
+    Returns ``None`` if the artifact is missing.
+    """
+    df = load_benchmark_returns(cs, label, period=period)
+    bench_label = label
+    if df.is_empty() or "ew_return" not in df.columns:
+        # Fallback: classification labels (``fwd_class_*``, ``fwd_dir_*``,
+        # ``fwd_tb_*``, ``fwd_carry_*``) share the same forecast window as
+        # their continuous counterpart (``fwd_ret_*``). The EW universe over
+        # the same window is identical regardless of the label being
+        # predicted, so map e.g. ``fwd_class_1m`` to ``fwd_ret_1m``.
+        fallback = None
+        for prefix in ("fwd_class_", "fwd_dir_", "fwd_tb_", "fwd_carry_"):
+            if label.startswith(prefix):
+                fallback = "fwd_ret_" + label[len(prefix) :]
+                break
+        if fallback is None:
+            return None
+        df = load_benchmark_returns(cs, fallback, period=period)
+        if df.is_empty() or "ew_return" not in df.columns:
+            return None
+        bench_label = fallback
+    suffix = "" if period == "overall" else f":{period}"
+    bench_hash = f"side_ew:{cs}:{bench_label}{suffix}"
+    return (
+        bench_hash,
+        df.select(
+            pl.col("timestamp").cast(pl.Date).alias("timestamp"),
+            pl.col("ew_return").cast(pl.Float64).alias("ret"),
+        ),
+        bench_label,
+    )
+
+
+def _aligned_returns(cs: str, h: str) -> pl.DataFrame | None:
+    """Load and normalize a backtest's daily returns; columns ``[timestamp, ret]``."""
+    parquet = get_case_study_dir(cs) / "run_log" / "backtest" / h / "daily_returns.parquet"
+    if not parquet.exists():
+        return None
+    df = pl.read_parquet(parquet)
+    ret_col = next(
+        (c for c in ("daily_return", "ret", "return", "value") if c in df.columns),
+        df.columns[-1],
+    )
+    ts_col = next(
+        (c for c in ("timestamp", "date", "datetime") if c in df.columns),
+        df.columns[0],
+    )
+    return df.select(
+        pl.col(ts_col).cast(pl.Date).alias("timestamp"),
+        pl.col(ret_col).cast(pl.Float64).alias("ret"),
+    )
+
+
+# %%
+import numpy as np
+
+from case_studies.utils.uncertainty import (
+    SIGNAL_BASELINE_BY_CASE_STUDY,
+    STAGE_SEQUENCE,
+    compute_independent_diff_uncertainty,
+    compute_paired_uncertainty,
+    descends_from,
+    joint_returns,
+)
+
+
+def _min_paired_n(ppy: int) -> int:
+    """Minimum series length for paired-bootstrap stability, frequency-aware.
+
+    The ~21 floor was written for daily cadences (about a month of obs).
+    Monthly case studies (e.g. ``us_firm_characteristics``) have ~12 holdout
+    observations by design, and ``compute_paired_uncertainty`` runs cleanly
+    on n=12. Scale the floor with ``ppy`` so monthly/weekly CSs aren't
+    blocked by a daily-tuned guard.
+    """
+    if ppy <= 12:  # monthly
+        return 6
+    if ppy <= 52:  # weekly
+        return 12
+    return 21  # daily / 8h / intraday
+
+
+# Distinguish skipped CSs from real failures so empty cross-dataset rollups
+# aren't indistinguishable from a silent crash.
+paired_rows: list[dict] = []
+paired_skips: list[dict] = []
+
+for cs, explorer in explorers.items():
+    # The leader is the configuration the case study reports, not a ranking rebuilt here.
+    # `_canonical_carrier` documents why the two are not the same ordering.
+    carrier = _canonical_carrier(cs)
+    if carrier is None:
+        paired_skips.append({"case_study": cs, "reason": "no_selectable_candidates"})
+        continue
+    leader_hash = carrier["val_backtest_hash"]
+    leader_label = carrier["label"]
+    if not leader_label:
+        paired_skips.append({"case_study": cs, "reason": "no_label_on_leader"})
+        continue
+    bench_resolution = _benchmark_returns_from_artifact(cs, leader_label)
+    if not bench_resolution:
+        paired_skips.append(
+            {"case_study": cs, "reason": f"no_benchmark_artifact_for_label:{leader_label}"}
+        )
+        continue
+    benchmark_hash, base, resolved_bench_label = bench_resolution
+
+    chal = _aligned_returns(cs, leader_hash)
+    if chal is None:
+        paired_skips.append({"case_study": cs, "reason": "no_challenger_returns_parquet"})
+        continue
+
+    ppy = {"daily": 252, "weekly": 52, "monthly": 12, "8h": 1095}.get(
+        FREQ_MAP.get(cs, "daily"), 252
+    )
+    min_n = _min_paired_n(ppy)
+    aligned = chal.join(base, on="timestamp", how="inner", suffix="_b")
+    if aligned.height < min_n:
+        paired_skips.append(
+            {"case_study": cs, "reason": f"insufficient_overlap:n={aligned.height}"}
+        )
+        continue
+    # A strategy against a benchmark: the leader's leading flat run is warmup before its
+    # first signal, not a position it held, so the sample starts where both are trading.
+    c_arr, b_arr = joint_returns(aligned["ret"].to_numpy(), aligned["ret_b"].to_numpy())
+    if c_arr.size < min_n:
+        paired_skips.append(
+            {"case_study": cs, "reason": f"insufficient_after_coerce:n={c_arr.size}"}
+        )
+        continue
+    paired = compute_paired_uncertainty(
+        c_arr,
+        b_arr,
+        periods_per_year=ppy,
+        case_study=cs,
+        label=leader_label,
+        n_boot=2000,
+        seed=42,
+    )
+    if not paired:
+        paired_skips.append({"case_study": cs, "reason": "paired_uncertainty_empty"})
+        continue
+
+    # Side-artifact benchmark — deterministic across (cs, label), no
+    # universe/rung ambiguity, no fallback-by-recency.
+    benchmark_kind = f"{SIGNAL_BASELINE_BY_CASE_STUDY.get(cs, 'equal_weight')}_side_artifact"
+    paired_rows.append(
+        {
+            "case_study": DISPLAY_NAMES.get(cs, cs),
+            "label": leader_label,
+            "benchmark_label": resolved_bench_label,  # may differ from leader_label when classification fallback fired
+            "sharpe_diff": paired.get("sharpe_diff"),
+            "sharpe_diff_ci_lo": paired.get("sharpe_diff_ci95_lo"),
+            "sharpe_diff_ci_hi": paired.get("sharpe_diff_ci95_hi"),
+            "ret_diff": paired.get("ret_diff"),
+            "info_ratio": paired.get("info_ratio"),
+            "p_value": paired.get("p_value"),
+            "prob_wins": paired.get("prob_challenger_wins"),
+            "block": paired.get("bootstrap_block_length"),
+            "n_boot": paired.get("bootstrap_n"),
+        }
+    )
+
+paired_df = pl.DataFrame(paired_rows)
+if not paired_df.is_empty():
+    print("\n=== Paired Bootstrap: rank-1 vs equal-weight ===")
+    print(
+        paired_df.select(
+            "case_study",
+            "label",
+            "benchmark_label",
+            "sharpe_diff",
+            "sharpe_diff_ci_lo",
+            "sharpe_diff_ci_hi",
+            "info_ratio",
+            "prob_wins",
+            "p_value",
+        )
+    )
+else:
+    print("\n=== Paired Bootstrap: rank-1 vs equal-weight ===")
+    print("No paired-bootstrap rows produced — see skip table below for reasons.")
+
+if paired_skips:
+    print("\nSkipped case studies:")
+    for s in paired_skips:
+        print(f"  - {s['case_study']:<32}  {s['reason']}")
+
+# Loud invariant — a 0/N or all-skipped outcome is now obvious in the
+# notebook output instead of buried under "no paired-bootstrap rows."
+print(f"\npaired={len(paired_rows)}/{len(explorers)}, skipped={len(paired_skips)}/{len(explorers)}")
+
+# %% [markdown]
+# Read each row as the selected challenger's annualized Sharpe **minus** the equal-weight
+# benchmark's, with a confidence interval from the paired stationary block bootstrap on the
+# daily-return difference; the information ratio summarizes the
+# excess-return-to-tracking-error ratio; ``prob_wins`` is the fraction of
+# bootstrap resamples in which the challenger beat the benchmark; ``p_value``
+# tests ``H0: sharpe_diff = 0``. A confident "the model adds skill over the
+# passive baseline" claim requires (i) the CI excludes zero, (ii) ``prob_wins``
+# close to 1, and (iii) a small ``p_value``. Cases where the CI straddles
+# zero are not failures — they signal that the apparent Sharpe gap is within
+# block-bootstrap sampling error and should be reported as such.
+
+# %% [markdown]
+# ## Paired metrics — full coverage for strategy-analysis notebook
+#
+# The block above populates the first pair type, the selected baseline signal against
+# equal-weight over the whole window. The strategy-analysis notebook (per-CS strategy notebooks)
+# requires five additional pair types per case study to render §2 (stage-
+# transition waterfall), §6 (holdout decay + holdout-vs-benchmark) and §7
+# (benchmark-aware diagnostics) without inline bootstrap recomputation.
+#
+# The pair set:
+#
+# 1. selected signal (overall) ↔ equal-weight (overall) — populated above
+# 2. selected signal (holdout) ↔ equal-weight (holdout window)
+# 3. the selected configuration on holdout ↔ the same configuration on
+#    validation (same lineage decay; min-length truncation since the
+#    windows are disjoint)
+# 4-6. one pair per consecutive stage transition the prediction actually has,
+#    in ``STAGE_SEQUENCE`` order: allocation ↔ signal, risk-overlay ↔
+#    allocation, cost-sensitivity ↔ risk-overlay. A case study that did not
+#    run a stage yields fewer pairs, and a stage that does not carry the
+#    previous stage's configuration yields none for that transition - the two
+#    were selected independently and their difference is not a stage effect.
+#
+# Pair #3 truncates both series to ``min(len(val), len(ho))`` to satisfy
+# ``compute_paired_uncertainty``'s equal-length precondition. The CI is
+# interpreted as bootstrap resampling Sharpe in each window independently
+# and taking the difference; the truncation is preserved in the
+# ``benchmark_kind`` value (``val_rank1_self`` always carries the truncation
+# caveat). All pairs use the same paired stationary block bootstrap helper.
+
+
+# %%
+def _full_strategy_spec_from_backtest(db: sqlite3.Connection, bt_hash: str) -> dict | None:
+    """Pull the full strategy spec dict (signal + allocation + risk) from
+    `bt_hash`'s spec_json. Returns None if the row is missing or signal has
+    no `method` field.
+
+    A backtest's full specification is the tuple (signal, allocation, risk). Pinning
+    the val→holdout pair on this full spec keeps the comparison apples-to-
+    apples; pinning on signal alone allows MAX(sharpe) to surface a holdout
+    row with a different allocation (e.g. conformal_weighted) or risk overlay
+    than the validation rank-1 carrier.
+    """
+    row = db.execute(
+        "SELECT spec_json FROM backtest_runs WHERE backtest_hash = ?",
+        (bt_hash,),
+    ).fetchone()
+    if not row:
+        return None
+    strat = json.loads(row[0]).get("strategy", {})
+    sig = strat.get("signal", {})
+    if not sig.get("method"):
+        return None
+    alloc = strat.get("allocation") or {}
+    risk = strat.get("risk") or {}
+    return {
+        "signal": {
+            "method": sig.get("method"),
+            "top_k": sig.get("top_k"),
+            "percentile": sig.get("percentile"),
+        },
+        "allocation": {
+            "method": alloc.get("method"),
+            "top_k": alloc.get("top_k"),
+            "long_short": alloc.get("long_short"),
+        },
+        "risk": {
+            "name": risk.get("name"),
+        },
+    }
+
+
+def _val_rank1_carrier(cs: str) -> dict | None:
+    """Return ``{'spec', 'prediction_hash'}`` for ``cs``'s validation rank-1 carrier.
+
+    The prediction hash is carried out alongside the spec because the holdout resolver
+    needs it: naming all three stages pins the configuration AND the checkpoint, and without
+    it a case study that registered several checkpoints against one strategy is ambiguous
+    and the resolver refuses. It was determinable all along - this walk had it in hand and
+    threw it away - so refusing there would have dropped a case study out of the
+    reader-facing holdout table for want of a value one line above.
+
+    The val rank-1 *full strategy* spec for ``cs`` — the
+    highest-Sharpe validation backtest across (signal, allocation,
+    risk_overlay) stages — walking candidates by val Sharpe descending until
+    one with a matching holdout backtest at the SAME full spec is found.
+
+    Implements the selection rule documented in §20.1: the deployed
+    holdout for each case study is the val rank-1 across all three pipeline
+    stages, retrained on holdout data; when retrain produces no usable
+    holdout at that full spec (degenerate predictions, vol-window mismatch,
+    universe filter rejection, etc.) the walk falls through to the next
+    candidate by val Sharpe. The first val candidate with a registered
+    holdout backtest at the same (signal, allocation, risk) tuple defines
+    the apples-to-apples carrier pair.
+
+    Returns None when no val candidate up to rank ~200 has a matching
+    holdout under the case study's label / rung restrictions.
+    """
+    explorer = explorers.get(cs)
+    if explorer is None:
+        return None
+    # The field the resolver ranks, in the resolver's order, rather than a concat of
+    # `explorer.best` re-filtered here: the walk starts at the carrier `_canonical_carrier`
+    # names and falls through in the same order the resolver would. Every row is kept - no
+    # dedup by prediction_hash - because when the rank-1 configuration has no matching holdout
+    # retrain but a same-prediction lower-Sharpe variant (a different allocator or risk
+    # overlay) does, a dedup would jump to a different prediction instead of accepting the
+    # same-prediction variant as the apples-to-apples match.
+    try:
+        candidates = selectable_validation_candidates(cs)
+    except NoSelectableCandidates:
+        # The helper raises on an empty pool rather than returning one, and this walk's
+        # callers read `None` as "no holdout pair for this case study" - the state the
+        # hand-built ranking reported as an empty frame. A pool with nothing eligible in it
+        # is that state, not a reason to stop aggregating the other eight.
+        return None
+    label_restriction = _CLUSTER_LABEL_RESTRICTIONS.get(cs)
+
+    case_dir = get_case_study_dir(cs)
+    db_path = case_dir / "run_log" / "registry.db"
+    rung = _CLUSTER_RUNG_RESTRICTIONS.get(cs)
+    db = sqlite3.connect(str(db_path))
+    try:
+        for candidate in candidates[:200]:
+            bt_hash = candidate["backtest_hash"]
+            spec = _full_strategy_spec_from_backtest(db, bt_hash)
+            if spec is None:
+                continue
+            # The probe below asks whether THIS candidate has a holdout, so it matches the
+            # candidate's own configuration and checkpoint and not only its strategy spec.
+            #
+            # Matching the spec alone made the walk stop at a candidate whose own checkpoint
+            # had no holdout whenever a sibling checkpoint had one at the same spec. The
+            # resolver, handed that configuration, then finds nothing for it - and the walk has
+            # already stopped, so the case study reports no holdout while one exists for a
+            # later candidate. Advancing instead is what makes the fall-through the resolver
+            # no longer performs unnecessary rather than merely forbidden.
+            carrier_row = db.execute(
+                """
+                SELECT t.family, t.config_name, t.label,
+                       p.checkpoint_value, p.checkpoint_kind
+                FROM prediction_sets p
+                JOIN training_runs t ON t.training_hash = p.training_hash
+                WHERE p.prediction_hash = ?
+                """,
+                (candidate["prediction_hash"],),
+            ).fetchone()
+            if carrier_row is None:
+                continue
+            spec_clauses, spec_params = _full_strategy_clauses(spec)
+            ho_clauses = ["p.split = 'holdout'"] + spec_clauses
+            if _retired(cs):
+                ho_clauses.append("p.prediction_hash NOT IN (SELECT value FROM json_each(?))")
+            ho_params: list[object] = list(spec_params)
+            if _retired(cs):
+                ho_params.append(json.dumps(sorted(_retired(cs))))
+            if label_restriction:
+                placeholders = ",".join("?" for _ in label_restriction)
+                ho_clauses.append(f"t.label IN ({placeholders})")
+                ho_params.extend(sorted(label_restriction))
+            if rung is not None:
+                ho_clauses.append(
+                    "COALESCE(json_extract(b.spec_json, '$.strategy.signal.universe_filter'), 'full') = ?"
+                )
+                ho_params.append(rung["universe_filter"])
+                if rung["exit_at_max_days"] is None:
+                    ho_clauses.append(
+                        "json_extract(b.spec_json, '$.strategy.signal.exit_at_max_days') IS NULL"
+                    )
+                else:
+                    ho_clauses.append(
+                        "json_extract(b.spec_json, '$.strategy.signal.exit_at_max_days') = ?"
+                    )
+                    ho_params.append(rung["exit_at_max_days"])
+            # `t.spec_json` rather than `1`, and no LIMIT: the probe has to apply the same
+            # eligibility test the resolver applies, and that test is not expressible in SQL.
+            #
+            # A model fitted on the validation folds can publish predictions over the holdout
+            # window, so `p.split = 'holdout'` with a non-null Sharpe is not enough to make a
+            # row a holdout result. The resolver drops those through
+            # `training_run_fitted_for_the_holdout`; a probe that admitted them would stop the
+            # walk at a candidate whose only holdout is validation-fitted, the resolver would
+            # then find nothing eligible for it, and the case study would report no holdout
+            # while a later candidate had a real one.
+            probe_rows = db.execute(
+                f"""
+                SELECT t.spec_json FROM prediction_sets p
+                JOIN training_runs t ON p.training_hash = t.training_hash
+                JOIN backtest_runs b ON p.prediction_hash = b.prediction_hash
+                                     AND b.stage IN ('signal','allocation','risk_overlay','holdout')
+                JOIN backtest_metrics bm ON b.backtest_hash = bm.backtest_hash
+                WHERE {" AND ".join(ho_clauses)}
+                  AND t.family = ?
+                  AND t.config_name = ?
+                  AND t.label = ?
+                  AND p.checkpoint_value IS ?
+                  AND p.checkpoint_kind IS ?
+                  AND bm.sharpe IS NOT NULL
+                """,
+                ho_params + list(carrier_row),
+            ).fetchall()
+            row = any(training_run_fitted_for_the_holdout(probe[0]) for probe in probe_rows)
+            if row:
+                return {"spec": spec, "prediction_hash": candidate["prediction_hash"]}
+    finally:
+        db.close()
+    return None
+
+
+def _full_strategy_clauses(spec: dict | None) -> tuple[list[str], list[object]]:
+    """Build SQL WHERE clauses + params that pin a backtest row to the full
+    strategy spec (signal + allocation + risk). Empty list returned when
+    spec is None (no constraint).
+
+    Pinning on the full spec ensures `MAX(sharpe)` over candidate holdout
+    backtests cannot surface a different allocator (e.g. conformal_weighted
+    when val rank-1 was score_weighted) or a different risk overlay than
+    the validation carrier — the val→holdout pair stays apples-to-apples
+    on the full pipeline configuration, not just the signal.
+    """
+    if not spec:
+        return [], []
+    clauses: list[str] = []
+    params: list[object] = []
+
+    sig = spec.get("signal") or {}
+    method = sig.get("method")
+    if method is None:
+        clauses.append("json_extract(b.spec_json, '$.strategy.signal.method') IS NULL")
+    else:
+        clauses.append("json_extract(b.spec_json, '$.strategy.signal.method') = ?")
+        params.append(method)
+    top_k = sig.get("top_k")
+    if top_k is None:
+        clauses.append("json_extract(b.spec_json, '$.strategy.signal.top_k') IS NULL")
+    else:
+        clauses.append("CAST(json_extract(b.spec_json, '$.strategy.signal.top_k') AS INTEGER) = ?")
+        params.append(int(top_k))
+    pct = sig.get("percentile")
+    if pct is None:
+        clauses.append("json_extract(b.spec_json, '$.strategy.signal.percentile') IS NULL")
+    else:
+        clauses.append(
+            "CAST(json_extract(b.spec_json, '$.strategy.signal.percentile') AS REAL) = ?"
+        )
+        params.append(float(pct))
+
+    alloc = spec.get("allocation") or {}
+    am = alloc.get("method")
+    if am is None:
+        clauses.append("json_extract(b.spec_json, '$.strategy.allocation.method') IS NULL")
+    else:
+        clauses.append("json_extract(b.spec_json, '$.strategy.allocation.method') = ?")
+        params.append(am)
+    ak = alloc.get("top_k")
+    if ak is None:
+        clauses.append("json_extract(b.spec_json, '$.strategy.allocation.top_k') IS NULL")
+    else:
+        clauses.append(
+            "CAST(json_extract(b.spec_json, '$.strategy.allocation.top_k') AS INTEGER) = ?"
+        )
+        params.append(int(ak))
+    als = alloc.get("long_short")
+    if als is None:
+        clauses.append("json_extract(b.spec_json, '$.strategy.allocation.long_short') IS NULL")
+    else:
+        clauses.append(
+            "CAST(json_extract(b.spec_json, '$.strategy.allocation.long_short') AS INTEGER) = ?"
+        )
+        params.append(int(bool(als)))
+
+    risk = spec.get("risk") or {}
+    risk_name = risk.get("name")
+    if risk_name is None:
+        clauses.append("json_extract(b.spec_json, '$.strategy.risk.name') IS NULL")
+    else:
+        clauses.append("json_extract(b.spec_json, '$.strategy.risk.name') = ?")
+        params.append(risk_name)
+
+    return clauses, params
+
+
+def _holdout_lineage_for(
+    cs: str,
+    leader_label: str,
+    strategy_spec: dict | None = None,
+    *,
+    prefer_prediction_hash: str | None = None,
+) -> dict | None:
+    """Return ``{backtest_hash, prediction_hash, family, config_name, label}`` for this
+    case study's holdout, from the shared resolver.
+
+    This used to be a second implementation of the query, and it drifted from the one in
+    `populate_paired_metrics` in three ways that all pointed the same direction. It did not
+    check that the training run behind a candidate was actually refitted for the holdout, so
+    a model fitted on the validation folds and scored over the holdout window was eligible.
+    It took `ORDER BY b.backtest_hash LIMIT 1` where several candidates survived, which
+    decides on nothing the configuration determines. And it preferred the validation
+    `training_hash`, which a correct holdout refit does not share - the refit registers its
+    own identity covering the holdout CV interval - so the preference could only ever match a
+    holdout scored from the validation-fitted model, which is the thing to exclude.
+
+    Both this notebook and `populate_paired_metrics` write `backtest_paired_metrics`. Two
+    copies of the rule let a Chapter 20 run overwrite the case study's pairs with a different
+    lineage, which is the reason the delegation matters beyond the duplication.
+
+    The specification is named by its PREDICTION hash rather than its training hash, because
+    pins the checkpoint as well as the configuration: one trained model registers one
+    prediction set per declared checkpoint and they share a strategy spec.
+
+    ``leader_label`` is unused, as it was before: the holdout's own label is returned so
+    callers can pair it against matching benchmarks, and restricting on the leader's label
+    would silently miss a holdout that fell through to another one.
+    """
+    from case_studies.utils.paired_metrics import _holdout_lineage_for as _shared_lineage_for
+
+    retired = _retired(cs)
+    return _shared_lineage_for(
+        cs,
+        leader_label,
+        strategy_spec,
+        label_restriction=_CLUSTER_LABEL_RESTRICTIONS.get(cs),
+        rung=_CLUSTER_RUNG_RESTRICTIONS.get(cs),
+        prefer_prediction_hash=prefer_prediction_hash,
+        retired_hashes=retired or None,
+    )
+
+
+def _val_backtest_for_lineage(cs: str, family: str, config_name: str, label: str) -> str | None:
+    """Return the highest-Sharpe validation signal-stage backtest_hash for
+    the given (family, config_name, label) lineage, or None if absent.
+
+    Used by ``val_rank1_self`` pair construction so the comparison stays
+    *within* a lineage when the holdout retrain came from a fallback
+    candidate (ranks 2+) rather than the validation rank-1.
+    """
+    case_dir = get_case_study_dir(cs)
+    db_path = case_dir / "run_log" / "registry.db"
+    if not db_path.exists():
+        return None
+    db = sqlite3.connect(str(db_path))
+    try:
+        row = db.execute(
+            """
+            SELECT b.backtest_hash
+            FROM prediction_sets p
+            JOIN training_runs t ON p.training_hash = t.training_hash
+            JOIN backtest_runs b ON p.prediction_hash = b.prediction_hash
+                                 AND b.stage = 'signal'
+            JOIN backtest_metrics bm ON b.backtest_hash = bm.backtest_hash
+            WHERE p.split = 'validation'
+              AND t.family = ?
+              AND t.config_name = ?
+              AND t.label = ?
+              {scope}
+            ORDER BY bm.sharpe DESC NULLS LAST
+            LIMIT 1
+            """.format(
+                scope=(
+                    " AND p.prediction_hash NOT IN (SELECT value FROM json_each(?))"
+                    if _retired(cs)
+                    else ""
+                )
+            ),
+            (family, config_name, label)
+            + ((json.dumps(sorted(_retired(cs))),) if _retired(cs) else ()),
+        ).fetchone()
+    finally:
+        db.close()
+    return row[0] if row else None
+
+
+# %%
+def _populate_pair(
+    cs,
+    challenger_hash,
+    benchmark_hash,
+    benchmark_kind,
+    challenger_returns,
+    benchmark_returns,
+    ppy,
+    label,
+    *,
+    disjoint_windows: bool = False,
+    challenger_overlays_baseline: bool = False,
+    benchmark_label: str | None = None,
+):
+    """Compute one paired-metric row without mutating a case-study registry.
+
+    With ``disjoint_windows=True`` (val→holdout decay), each side is bootstrapped
+    over its full window and the difference distribution is built from those draws,
+    because two windows sharing no timestamps leave no difference series to pair on.
+    ``info_ratio`` columns will be NaN for the same reason. See
+    :func:`case_studies.utils.uncertainty.compute_independent_diff_uncertainty` for
+    what that interval does and does not cover.
+
+    Otherwise, the streams are inner-joined on timestamp and a paired stationary
+    bootstrap runs on the aligned diff series.
+
+    ``challenger_overlays_baseline`` says what a leading flat run on the challenger
+    means, and only the caller knows. Against a benchmark it is warmup before the
+    challenger's first signal and the sample starts where both are trading; for a risk
+    overlay against its own carrier it is a position the overlay chose to hold and is
+    the effect being measured, so the sample starts where either has traded. Every pair
+    this notebook builds is the first kind, and it says so rather than relying on a
+    default: see :func:`case_studies.utils.uncertainty.joint_returns`.
+    """
+    min_n = _min_paired_n(ppy)
+    if disjoint_windows:
+        c_arr = challenger_returns.sort("timestamp")["ret"].to_numpy()
+        b_arr = benchmark_returns.sort("timestamp")["ret"].to_numpy()
+        finite_c = np.isfinite(c_arr)
+        finite_b = np.isfinite(b_arr)
+        c_arr, b_arr = c_arr[finite_c], b_arr[finite_b]
+        if c_arr.size < min_n or b_arr.size < min_n:
+            return {
+                "cs": cs,
+                "kind": benchmark_kind,
+                "label": label,
+                "benchmark_label": benchmark_label if benchmark_label is not None else label,
+                "skip": f"insufficient_disjoint:n_c={c_arr.size},n_b={b_arr.size}",
+            }
+        n_overlap = min(c_arr.size, b_arr.size)
+        paired = compute_independent_diff_uncertainty(
+            c_arr,
+            b_arr,
+            periods_per_year=ppy,
+            case_study=cs,
+            label=label,
+            n_boot=2000,
+            seed=42,
+        )
+    else:
+        aligned = challenger_returns.join(
+            benchmark_returns, on="timestamp", how="inner", suffix="_b"
+        )
+        if aligned.height < min_n:
+            return {
+                "cs": cs,
+                "kind": benchmark_kind,
+                "label": label,
+                "benchmark_label": benchmark_label if benchmark_label is not None else label,
+                "skip": f"insufficient_overlap:n={aligned.height}",
+            }
+        c_arr = aligned["ret"].to_numpy()
+        b_arr = aligned["ret_b"].to_numpy()
+        # Measured here, applied once inside `compute_paired_uncertainty`, which trims
+        # whatever it is handed. Handing it the already-trimmed pair silently undoes the
+        # overlay rule: the second trim runs under this function's own default, so an
+        # overlay pair would come back with the benchmark shape and no error. Same
+        # arrangement `paired_metrics._populate_pair` uses, because both write this table.
+        n_overlap = joint_returns(
+            c_arr, b_arr, challenger_overlays_baseline=challenger_overlays_baseline
+        )[0].size
+        if n_overlap < min_n:
+            return {
+                "cs": cs,
+                "kind": benchmark_kind,
+                "label": label,
+                "benchmark_label": benchmark_label if benchmark_label is not None else label,
+                "skip": f"insufficient_after_coerce:n={n_overlap}",
+            }
+        paired = compute_paired_uncertainty(
+            c_arr,
+            b_arr,
+            periods_per_year=ppy,
+            case_study=cs,
+            label=label,
+            n_boot=2000,
+            seed=42,
+            challenger_overlays_baseline=challenger_overlays_baseline,
+        )
+
+    if not paired:
+        return {
+            "cs": cs,
+            "kind": benchmark_kind,
+            "label": label,
+            "benchmark_label": benchmark_label if benchmark_label is not None else label,
+            "skip": "uncertainty_empty",
+        }
+    # For the disjoint path, paired carries n_c/n_b (post-coerce per-side
+    # sizes); use min(n_c, n_b) so n_overlap reflects what the bootstrap
+    # actually used, not the pre-coerce min from the populator. For the
+    # paired path, paired has no n_c/n_b and n_overlap is already the
+    # post-`joint_returns` length.
+    n_actual = n_overlap
+    n_c = paired.get("n_c")
+    n_b = paired.get("n_b")
+    if n_c is not None and n_b is not None:
+        n_actual = int(min(float(n_c), float(n_b)))
+    return {
+        "cs": cs,
+        "kind": benchmark_kind,
+        "label": label,
+        "benchmark_label": benchmark_label if benchmark_label is not None else label,
+        "n_overlap": n_actual,
+        "sharpe_diff": paired.get("sharpe_diff"),
+        "sharpe_diff_ci_lo": paired.get("sharpe_diff_ci95_lo"),
+        "sharpe_diff_ci_hi": paired.get("sharpe_diff_ci95_hi"),
+        "info_ratio": paired.get("info_ratio"),
+        "p_value": paired.get("p_value"),
+    }
+
+
+# %%
+extra_paired_rows: list[dict] = []
+_PAIRED_STAGES = ("signal", "allocation", "risk_overlay")
+for cs, explorer in explorers.items():
+    # The same carrier the spine and the paired-bootstrap leader above take. The holdout
+    # retrain replays the rank-1's whole strategy spec, which is why this reads the
+    # cross-stage carrier rather than a signal-stage rank-1: on crypto the signal-stage
+    # rank-1 is `quintile_long_short` while the carrier is `score_weighted` over
+    # `equal_weight_top_k`, and `_val_rank1_signal_spec` would find no matching holdout.
+    carrier = _canonical_carrier(cs)
+    if carrier is None:
+        continue
+    leader_hash = carrier["val_backtest_hash"]
+    leader_phash = carrier["val_prediction_hash"]
+    leader_label = carrier["label"]
+    if not leader_label:
+        continue
+    ppy = {"daily": 252, "weekly": 52, "monthly": 12, "8h": 1095}.get(
+        FREQ_MAP.get(cs, "daily"), 252
+    )
+
+    chal_full = _aligned_returns(cs, leader_hash)
+    if chal_full is None:
+        continue
+
+    # Pair #2: cross-stage rank-1 holdout backtest ↔ equal-weight (holdout
+    # window). Use the holdout's *own* label for benchmark resolution. The
+    # holdout lineage may differ from the validation rank-1 in both family
+    # AND label when generate_holdout's degeneracy fallback fires (e.g.,
+    # crypto's cross-stage rank-1 over signal/allocation/risk_overlay runs
+    # on fwd_ret_24h but the next fall-through candidate runs on
+    # fwd_ret_8h). Constrain by val rank-1's full (signal, allocation,
+    # risk) spec so val→holdout decay isn't measured across different
+    # allocators (e.g. score_weighted vs conformal_weighted), different
+    # position-sizing parameters, or different risk overlays.
+    # The selected configuration is whatever the WALK settled on, spec and prediction hash together, and it
+    # is not `leader_phash`. The walk advances past the leader when the leader has no holdout
+    # of its own, so passing the leader's hash alongside a later candidate's spec asks for a
+    # holdout that matches neither - and the strict pin answers None rather than quietly
+    # falling through, which is how the case study would lose a fallback configuration it has.
+    #
+    # The prediction hash is what is passed, not the training hash: it pins the checkpoint as
+    # well as the configuration, and a correct holdout refit registers a NEW training identity
+    # covering the holdout CV interval, so preferring the validation training hash could only
+    # ever match a holdout scored from the validation-fitted model. The lookup that used to
+    # sit here - prediction hash to training hash, with its own connection and error branch -
+    # is gone with it; the resolver reads the selected configuration itself.
+    #
+    # The refusal is caught here for the same reason `query_holdout_rows` catches it: it is a
+    # statement about ONE case study, and letting it propagate would end the loop and drop the
+    # other eight. The notebook then reports no holdout pair for this case study, which is the
+    # correct answer when nothing can be shown to have selected one, and carries on.
+    val_rank1 = _val_rank1_carrier(cs)
+    val_spec = val_rank1["spec"] if val_rank1 else None
+    try:
+        ho_lineage = _holdout_lineage_for(
+            cs,
+            leader_label,
+            strategy_spec=val_spec,
+            prefer_prediction_hash=val_rank1["prediction_hash"] if val_rank1 else leader_phash,
+        )
+    except ValueError as exc:
+        print(f"[warn] {cs}: no holdout pair, holdout not resolvable: {exc}")
+        ho_lineage = None
+    ho_hash = ho_lineage["backtest_hash"] if ho_lineage else None
+    ho_label = ho_lineage["label"] if ho_lineage else leader_label
+    chal_ho = _aligned_returns(cs, ho_hash) if ho_hash else None
+    bench_ho_resolved = _benchmark_returns_from_artifact(cs, ho_label, period="holdout")
+
+    if bench_ho_resolved is not None and chal_ho is not None:
+        bench_ho_hash, bench_ho_norm, bench_ho_label = bench_ho_resolved
+        extra_paired_rows.append(
+            _populate_pair(
+                cs,
+                ho_hash,
+                bench_ho_hash,
+                f"{SIGNAL_BASELINE_BY_CASE_STUDY.get(cs, 'equal_weight')}_holdout_side_artifact",
+                chal_ho,
+                bench_ho_norm,
+                ppy,
+                ho_label,
+                # A strategy against a benchmark, so a flat opening run on the holdout
+                # challenger is warmup before its first signal rather than a held position.
+                challenger_overlays_baseline=False,
+                benchmark_label=bench_ho_label,
+            )
+        )
+    else:
+        # Surface the silent skip so downstream summaries don't conflate
+        # "no holdout EW pair" with "fallback succeeded but bootstrap empty".
+        # Hits us_firm_characteristics fwd_class_1m when the holdout-window
+        # EW artifact is absent for both the classification label and its
+        # fwd_ret_* fallback.
+        # Multi-axis classification: when both inputs are missing, combine
+        # the reasons so reviewers see the full gap, not just the first one.
+        skip_parts: list[str] = []
+        if chal_ho is None:
+            skip_parts.append("no_holdout_challenger_returns")
+        if bench_ho_resolved is None:
+            skip_parts.append("no_holdout_benchmark_artifact")
+        extra_paired_rows.append(
+            {
+                "cs": cs,
+                "kind": f"{SIGNAL_BASELINE_BY_CASE_STUDY.get(cs, 'equal_weight')}_holdout_side_artifact",
+                "label": ho_label,
+                "benchmark_label": None,
+                "skip": "+".join(skip_parts),
+            }
+        )
+
+    # Pair #3: holdout rank-1 ↔ validation backtest of the SAME lineage.
+    # A case study's holdout notebook may fall back from val rank-1 to rank-K
+    # when the rank-1 retrain produces degenerate predictions. When that happens,
+    # comparing the
+    # holdout against the val rank-1 of a *different* lineage measures
+    # cross-lineage difference, not decay. Always pair against the
+    # holdout-lineage's own validation backtest so val_rank1_self holds its
+    # "same-lineage decay" semantics.
+    if chal_ho is not None and ho_lineage is not None:
+        ho_family = ho_lineage["family"]
+        ho_config = ho_lineage["config_name"]
+        same_lineage = (
+            ho_family == carrier["family"]
+            and ho_config == carrier["config_name"]
+            and ho_label == leader_label
+        )
+        if same_lineage:
+            val_self_hash = leader_hash
+            val_self_returns = chal_full
+        else:
+            val_self_hash = _val_backtest_for_lineage(cs, ho_family, ho_config, ho_label)
+            val_self_returns = _aligned_returns(cs, val_self_hash) if val_self_hash else None
+        if val_self_hash is not None and val_self_returns is not None:
+            extra_paired_rows.append(
+                _populate_pair(
+                    cs,
+                    ho_hash,
+                    val_self_hash,
+                    "val_rank1_self",
+                    chal_ho,
+                    val_self_returns,
+                    ppy,
+                    ho_label,
+                    disjoint_windows=True,
+                )
+            )
+
+    # Stage transitions on the validation rank-1 lineage. Consecutive *present* stages of
+    # STAGE_SEQUENCE, and only where the later one was actually built on the earlier - the
+    # same rule `populate_paired_metrics` applies, because both write this table.
+    lineage = explorer.champion_lineage(leader_phash)
+    present = [s for s in STAGE_SEQUENCE if lineage.get(s)]
+    for prev_stage, this_stage in zip(present, present[1:]):
+        kind = f"{prev_stage}_leader"
+        prev_entry = lineage[prev_stage]
+        this_entry = lineage[this_stage]
+        if not descends_from(
+            this_entry.get("_strategy", {}), prev_entry.get("_strategy", {}), prev_stage
+        ):
+            print(
+                f"  skip {prev_stage} -> {this_stage}: the {this_stage} leader is not "
+                f"built on the {prev_stage} leader"
+            )
+            continue
+        prev_hash = prev_entry["backtest_hash"]
+        this_hash = this_entry["backtest_hash"]
+        prev_returns = _aligned_returns(cs, prev_hash)
+        this_returns = _aligned_returns(cs, this_hash)
+        if prev_returns is None or this_returns is None:
+            continue
+        extra_paired_rows.append(
+            _populate_pair(
+                cs,
+                this_hash,
+                prev_hash,
+                kind,
+                this_returns,
+                prev_returns,
+                ppy,
+                leader_label,
+                # `champion_lineage` takes the best backtest at each stage independently, so
+                # two adjacent entries are not demonstrably parent and child and the later
+                # one can carry a genuine warmup. Same position `populate_paired_metrics`
+                # takes on the same transitions, because both write this table.
+                challenger_overlays_baseline=False,
+            )
+        )
+
+# %%
+extra_paired_df = pl.DataFrame(extra_paired_rows)
+if extra_paired_df.is_empty():
+    print("\n=== Extended Paired-Bootstrap Coverage ===")
+    print("No extended paired rows produced.")
+else:
+    print(
+        f"\nextra_paired={len(extra_paired_rows)} rows across "
+        f"{extra_paired_df['cs'].n_unique()} case studies"
+    )
+
+# %% [markdown]
+# ### Extended Paired-Bootstrap Coverage
+
+# %%
+extra_paired_df
+
+# %% [markdown]
+# Summary by `benchmark_kind` shows which extension pair types landed for
+# which CSs. ``equal_weight_holdout_side_artifact`` and ``val_rank1_self``
+# are universal (modulo holdout availability); stage-transition pairs
+# (one ``<stage>_leader`` per stage that has a successor in
+# ``STAGE_SEQUENCE``: ``signal_leader``, ``allocation_leader``,
+# ``risk_overlay_leader``) vary by CS pipeline coverage. CSs pinned at the signal stage (e.g.
+# ``sp500_options`` Rung-2) will surface zero stage-transition rows.
+
+# %% [markdown]
+# ## Sharpe Progression
+#
+# For each case study, trace how the **best signal's** Sharpe evolves
+# through the pipeline stages. This follows a single `prediction_hash`
+# through allocation, costs, and risk — case studies that show `null`
+# at later stages have not had those stages run for this particular signal.
+
+# %%
+prog_rows = []
+for cs, explorer in explorers.items():
+    # Apply the same family / label / universe-filter scoping as the rank-1
+    # cluster diagnostics so the Sharpe progression chart follows the
+    # chapter-wide rank-1 signal rather than whichever Sharpe happens to be
+    # highest under any execution regime.
+    label_restriction = _CLUSTER_LABEL_RESTRICTIONS.get(cs)
+    candidates = _best_live(explorer, cs, "signal", 200)
+    if not candidates.is_empty() and "family" in candidates.columns:
+        candidates = candidates.filter(pl.col("family") != "benchmark")
+    if label_restriction and "label" in candidates.columns and not candidates.is_empty():
+        candidates = candidates.filter(pl.col("label").is_in(list(label_restriction)))
+    candidates = _apply_rung_restriction(candidates, cs)
+    best_signal = candidates.head(1)
+    if best_signal.is_empty():
+        continue
+    pred_hash = best_signal["prediction_hash"][0]
+    # Pin progression() to the same rung so allocation/cost/risk rows for
+    # sp500_options trace the Rung-2 lineage instead of the higher-Sharpe
+    # Rung-3 backtests that share the same prediction_hash.
+    prog = _progression_for(explorer, pred_hash, cs)
+    if prog.is_empty():
+        continue
+    # Inject the scope-filtered best_signal as the signal row to keep the
+    # rank-1 Sharpe consistent with the cluster diagnostics table.
+    _bs = best_signal.row(0, named=True)
+    prog_rows.append(
+        {
+            "case_study": DISPLAY_NAMES.get(cs, cs),
+            "stage": "signal",
+            "sharpe": _bs["sharpe"],
+            "cagr": _bs.get("cagr"),
+            "max_drawdown": _bs.get("max_drawdown"),
+        }
+    )
+    for row in prog.filter(pl.col("stage") != "signal").iter_rows(named=True):
+        prog_rows.append(
+            {
+                "case_study": DISPLAY_NAMES.get(cs, cs),
+                "stage": row["stage"],
+                "sharpe": row["sharpe"],
+                "cagr": row.get("cagr"),
+                "max_drawdown": row.get("max_drawdown"),
+            }
+        )
+
+prog_df = pl.DataFrame(prog_rows)
+if not prog_df.is_empty():
+    prog_pivot = prog_df.pivot(on="stage", index="case_study", values="sharpe").sort("case_study")
+else:
+    prog_pivot = pl.DataFrame()
+
+# %% [markdown]
+# ### Sharpe Progression (best prediction per CS)
+
+# %%
+prog_pivot
+
+# %% [markdown]
+# Read the columns left to right to see how far the selected prediction hash was carried and
+# where the trace stops. A `null` entry says that hash was not tested at that stage; it does
+# not say the case study lacks the stage.
+
+# %% [markdown]
+# ## Selected-Configuration Lineage
+#
+# For each case study, trace the *locked* path through the pipeline for the selected validation
+# signal: how Sharpe moves when the same prediction set is carried through the allocation, cost
+# and risk stages. Locking the prediction makes each stage-to-stage difference attributable - if
+# Sharpe moves between allocation and cost, the variable is cost and not a silently changed
+# upstream signal.
+#
+# The path is: the selected signal, then the highest-Sharpe allocation on that signal, then the
+# cost-tested version, then the risk-managed version.
+
+# %%
+lineage_rows = []
+for cs, explorer in explorers.items():
+    # Apply case-study filters: exclude passive benchmarks (equal_weight,
+    # etc.), restrict sp500_options to ret_to_expiry / HTM dispatch, and
+    # pin sp500_options to the Rung-2 full-universe baseline so lineage
+    # traces the same signal as the cross-case cluster diagnostics.
+    label_restriction = _CLUSTER_LABEL_RESTRICTIONS.get(cs)
+    candidates = _best_live(explorer, cs, "signal", 200)
+    if not candidates.is_empty() and "family" in candidates.columns:
+        candidates = candidates.filter(pl.col("family") != "benchmark")
+    if label_restriction and "label" in candidates.columns and not candidates.is_empty():
+        candidates = candidates.filter(pl.col("label").is_in(list(label_restriction)))
+    candidates = _apply_rung_restriction(candidates, cs)
+    if candidates.is_empty():
+        continue
+    best_signal = candidates.head(1)
+    pred_hash = best_signal["prediction_hash"][0]
+    signal_source = best_signal["source"][0] if "source" in best_signal.columns else ""
+
+    prog = _progression_for(explorer, pred_hash, cs)
+    if prog.is_empty():
+        continue
+
+    row = {
+        "case_study": DISPLAY_NAMES.get(cs, cs),
+        "cs_id": cs,
+        "pred_hash": pred_hash,
+        "signal_source": signal_source,
+    }
+    stage_order = list(STAGE_SEQUENCE)
+    for stage in stage_order:
+        if stage == "signal":
+            # Use the scope-filtered best_signal directly; progression() does
+            # not apply universe_filter, so for sp500_options a prediction
+            # that's backtested under both Rung-2 (full) and Rung-3 (liquid)
+            # universes would otherwise surface the higher-Sharpe Rung-3 run.
+            r = best_signal.row(0, named=True)
+            row["signal_sharpe"] = round(r["sharpe"], 3)
+            row["signal_max_dd"] = round(r.get("max_drawdown") or 0, 3)
+            row["signal_hash"] = r.get("backtest_hash", "")
+            continue
+        stage_data = prog.filter(pl.col("stage") == stage)
+        if not stage_data.is_empty():
+            r = stage_data.row(0, named=True)
+            row[f"{stage}_sharpe"] = round(r["sharpe"], 3)
+            row[f"{stage}_max_dd"] = round(r.get("max_drawdown") or 0, 3)
+            row[f"{stage}_hash"] = r.get("backtest_hash", "")
+        else:
+            row[f"{stage}_sharpe"] = None
+            row[f"{stage}_max_dd"] = None
+            row[f"{stage}_hash"] = None
+
+    lineage_rows.append(row)
+
+# %%
+lineage_df = pl.DataFrame(lineage_rows)
+if not lineage_df.is_empty():
+    print("\n=== Rank-1 Lineage (locked stage path per CS) ===")
+    print(
+        lineage_df.select(
+            "case_study",
+            "signal_source",
+            *[f"{stage}_sharpe" for stage in STAGE_SEQUENCE],
+        )
+    )
+
+# %% [markdown]
+# The lineage table shows how the selected signal's Sharpe moves stage by stage. A blank in a
+# later stage means no downstream backtest has been run for that prediction hash. It says
+# nothing about whether the stage exists in the pipeline, only that it was not re-run after this
+# hash became the selection. §20.3 works through how to read the pattern.
+
+# %% [markdown]
+# ## Holdout Integration
+#
+# Load holdout backtest results from each case study's registry.
+# These are the frozen out-of-sample validations each case study generates in its own
+# `NN_holdout_predictions` and `NN_holdout_backtest` pair, registered in `prediction_sets`
+# with `split='holdout'`. This chapter reads them; it does not produce them.
+
+
+# %%
+def _optional_metric(db: sqlite3.Connection, table: str, column: str, alias: str) -> str:
+    """Select `table.column` when the registry has it, otherwise a NULL of the same alias.
+
+    Registries written before a metric existed simply lack its column, and a query naming one
+    aborts with `no such column` - taking every other case study down with it. Probing the schema
+    keeps a stale registry a row of missing values rather than a failed run.
+    """
+    columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+    prefix = {"backtest_metrics": "bm", "prediction_metrics": "pm"}[table]
+    return f"{prefix}.{column} AS {alias}" if column in columns else f"NULL AS {alias}"
+
+
+def query_holdout_rows():
+    """Query holdout backtest results from each case study registry.
+
+    Applies the same label / universe-filter restrictions as the
+    cluster-diagnostics rank-1 selection so the reported holdout follows
+    the canonical signal. For sp500_options that is the Rung-3 retrain -
+    hold to maturity on the liquid bottom-quintile-half-spread subset -
+    because ``strategy_analysis.UNIVERSE_RESTRICTIONS`` pins the case study
+    to ``liquid`` and excludes full-universe rows from rank-1 selection.
+    The Rung-2 full-universe variant is the demoted one, kept for the
+    cost-mitigation cascade §18.8 works through rung by rung, and it is not
+    the headline here.
+    """
+    holdout_rows = []
+    for cs in ALL_CASE_STUDIES:
+        case_dir = get_case_study_dir(cs)
+        db_path = case_dir / "run_log" / "registry.db"
+        if not db_path.exists():
+            continue
+
+        # WHICH holdout is decided by the one resolver, and only the metrics are read here.
+        #
+        # This used to build its own WHERE clause and take `ORDER BY b.backtest_hash LIMIT 1`,
+        # which selected on nothing the configuration determines and admitted a training run
+        # that was never refitted for the holdout. It was also a second copy of a rule that
+        # `_holdout_lineage_for` already applies - and the two write the same reader-facing
+        # comparison, so a disagreement between them publishes a holdout row against paired
+        # metrics computed from a different evaluation.
+        #
+        # A refusal is per case study, not fatal to the chapter: the resolver raises when
+        # several candidates survive, and the other eight case studies still have rows to
+        # report. The reason is printed rather than swallowed, because a case study silently
+        # missing from the holdout table looks like unrun work.
+        # No selected configuration is an ANSWER here, and the answer is no row.
+        #
+        # The selection IS the answer: the rank-1 validation configuration is the only thing
+        # that nominates a holdout, and the invariant the resolver exists to hold is that the
+        # holdout is never chosen by its own holdout result. Falling through to an unpinned
+        # query when the selected configuration is missing breaks exactly that - it publishes whatever single
+        # eligible holdout the registry happens to hold, which is a holdout that selected
+        # itself. This table is reader-facing, so it takes the pinned answer or none.
+        #
+        # It differs from the paired-metrics caller above, which falls back to `leader_phash`:
+        # there a leader is already in hand and the pin narrows a known lineage. Here the
+        # label is unrestricted (`""`), so an unpinned query is at its most permissive.
+        carrier = _val_rank1_carrier(cs)
+        if carrier is None:
+            print(
+                f"[warn] {cs}: no rank-1 validation carrier, so no holdout row - "
+                "nothing selected a holdout, and an unpinned query would let one select itself"
+            )
+            continue
+        try:
+            lineage = _holdout_lineage_for(
+                cs,
+                "",
+                carrier["spec"],
+                prefer_prediction_hash=carrier["prediction_hash"],
+            )
+        except ValueError as exc:
+            print(f"[warn] {cs}: holdout not resolvable, so no holdout row: {exc}")
+            continue
+        if lineage is None:
+            continue
+        clauses = ["b.backtest_hash = ?"]
+        params: list[object] = [lineage["backtest_hash"]]
+        db = sqlite3.connect(str(db_path))
+        where_sql = " AND ".join(clauses)
+
+        db.row_factory = sqlite3.Row
+        optional = ", ".join(
+            [
+                _optional_metric(db, "prediction_metrics", "ic_mean_daily", "holdout_ic_daily"),
+                _optional_metric(db, "prediction_metrics", "ic_se_hac", "holdout_ic_se_hac"),
+                _optional_metric(db, "prediction_metrics", "ic_p_hac", "holdout_ic_p_hac"),
+                _optional_metric(db, "prediction_metrics", "ic_ci_lo", "holdout_ic_ci_lo"),
+                _optional_metric(db, "prediction_metrics", "ic_ci_hi", "holdout_ic_ci_hi"),
+                _optional_metric(db, "backtest_metrics", "sharpe_ci95_lo", "holdout_sharpe_ci_lo"),
+                _optional_metric(db, "backtest_metrics", "sharpe_ci95_hi", "holdout_sharpe_ci_hi"),
+                _optional_metric(db, "backtest_metrics", "psr_pvalue", "holdout_psr_p"),
+            ]
+        )
+        rows = db.execute(
+            f"""
+            SELECT t.family, t.config_name, t.label,
+                   b.backtest_hash AS holdout_backtest_hash,
+                   p.prediction_hash AS holdout_prediction_hash,
+                   pm.ic_mean AS holdout_ic,
+                   {optional},
+                   bm.sharpe AS holdout_sharpe,
+                   bm.max_drawdown AS holdout_max_dd,
+                   bm.cagr AS holdout_cagr,
+                   bm.num_trades AS holdout_num_trades
+            FROM prediction_sets p
+            JOIN training_runs t ON p.training_hash = t.training_hash
+            LEFT JOIN prediction_metrics pm
+                ON p.prediction_hash = pm.prediction_hash
+            LEFT JOIN backtest_runs b
+                ON p.prediction_hash = b.prediction_hash AND b.stage IN ('signal','allocation','risk_overlay','holdout')
+            LEFT JOIN backtest_metrics bm
+                ON b.backtest_hash = bm.backtest_hash
+            WHERE {where_sql}
+            ORDER BY b.backtest_hash
+            LIMIT 1
+            """,
+            params,
+        ).fetchall()
+        db.close()
+
+        for row in rows:
+            holdout_rows.append(
+                {
+                    "case_study": DISPLAY_NAMES.get(cs, cs),
+                    "cs_id": cs,
+                    "family": row["family"],
+                    "config": row["config_name"],
+                    "label": row["label"],
+                    "holdout_backtest_hash": row["holdout_backtest_hash"],
+                    "holdout_prediction_hash": row["holdout_prediction_hash"],
+                    "holdout_ic": row["holdout_ic"],
+                    "holdout_ic_daily": row["holdout_ic_daily"],
+                    "holdout_ic_se_hac": row["holdout_ic_se_hac"],
+                    "holdout_ic_p_hac": row["holdout_ic_p_hac"],
+                    "holdout_ic_ci_lo": row["holdout_ic_ci_lo"],
+                    "holdout_ic_ci_hi": row["holdout_ic_ci_hi"],
+                    "holdout_sharpe": row["holdout_sharpe"],
+                    "holdout_sharpe_ci_lo": row["holdout_sharpe_ci_lo"],
+                    "holdout_sharpe_ci_hi": row["holdout_sharpe_ci_hi"],
+                    "holdout_max_dd": row["holdout_max_dd"],
+                    "holdout_cagr": row["holdout_cagr"],
+                    "holdout_num_trades": row["holdout_num_trades"],
+                    "holdout_psr_p": row["holdout_psr_p"],
+                }
+            )
+    return holdout_rows
+
+
+# The columns query_holdout_rows emits, declared so the empty case still has a shape.
+# `pl.DataFrame([])` is 0x0 with no columns, and the downstream notebooks select and join
+# on these names: a schema-less frame turns "no case study has a holdout yet" into a
+# missing-column error one notebook later, which is a worse failure than the one it
+# replaces. The populated path is unchanged - polars infers from the rows exactly as before.
+HOLDOUT_SCHEMA = {
+    "case_study": pl.String,
+    "cs_id": pl.String,
+    "family": pl.String,
+    "config": pl.String,
+    "label": pl.String,
+    "holdout_backtest_hash": pl.String,
+    "holdout_prediction_hash": pl.String,
+    "holdout_ic": pl.Float64,
+    "holdout_ic_daily": pl.Float64,
+    "holdout_ic_se_hac": pl.Float64,
+    "holdout_ic_p_hac": pl.Float64,
+    "holdout_ic_ci_lo": pl.Float64,
+    "holdout_ic_ci_hi": pl.Float64,
+    "holdout_sharpe": pl.Float64,
+    "holdout_sharpe_ci_lo": pl.Float64,
+    "holdout_sharpe_ci_hi": pl.Float64,
+    "holdout_max_dd": pl.Float64,
+    "holdout_cagr": pl.Float64,
+    "holdout_num_trades": pl.Float64,
+    "holdout_psr_p": pl.Float64,
+}
+
+
+# %%
+holdout_rows = query_holdout_rows()
+
+# %%
+holdout_df = pl.DataFrame(holdout_rows) if holdout_rows else pl.DataFrame(schema=HOLDOUT_SCHEMA)
+if not holdout_df.is_empty():
+    print(f"\n=== Holdout Results ({len(holdout_df)} entries) ===")
+    print(
+        holdout_df.select("case_study", "family", "holdout_ic", "holdout_sharpe", "holdout_max_dd")
+    )
+
+# %% [markdown]
+# The table above is the whole holdout result, and it is the place to read which case studies
+# come out positive on Sharpe and which on IC. Those two columns need not agree for a given
+# case study, which is why both columns are printed rather than one. Ranking accuracy and
+# portfolio construction are different things, and a case study can have one without the
+# other: the construction contributes variance that out-of-sample ranking accuracy says
+# nothing about.
+#
+# **Reading a case study whose edge does not carry forward.** Where a case study's holdout
+# Sharpe and holdout IC are both negative while its validation Sharpe was strongly positive, the
+# model ranking has inverted on the holdout window. That is the outcome the holdout exists to
+# be able to report, and the table above says which configuration was retrained.
+#
+# The counts on both columns move whenever a registry is rebuilt, which is why this section
+# states the shape and leaves the tally to the table.
+
+# %% [markdown]
+# ## Stage Attrition Funnel
+#
+# How many case studies survive each stage of the pipeline?
+# A "good predictor" has positive IC. A "tradable" strategy has positive
+# gross Sharpe. "Cost-surviving" means positive Sharpe at assumed costs.
+# "Risk-tolerable" means managed Sharpe is positive. "Holdout-valid"
+# means the holdout Sharpe is positive.
+#
+# Each row is counted *independently* against `bt_df` and `holdout_df` —
+# a case study can appear in `cost_surviving` without appearing in
+# `tradable_gross`, since the pipeline runs both stages off the selected
+# trained model. NB08 reports a *cumulative* version of the same funnel
+# (each gate is the subset that passed every preceding gate); use NB08
+# for the strict survivor count and this section for the per-stage
+# attrition that the chapter prose discusses.
+
+# %%
+attrition = {
+    "good_predictor": 0,  # positive IC
+    "tradable_gross": 0,  # positive signal-stage Sharpe
+    "cost_surviving": 0,  # positive cost-adjusted Sharpe
+    "risk_tolerable": 0,  # positive managed Sharpe
+    "holdout_valid": 0,  # positive holdout Sharpe
+}
+
+for cs in ALL_CASE_STUDIES:
+    display_name = DISPLAY_NAMES.get(cs, cs)
+
+    # IC check
+    cs_ic = ic_df.filter(pl.col("case_study") == display_name)
+    if not cs_ic.is_empty() and cs_ic["ic_best"].max() > 0:
+        attrition["good_predictor"] += 1
+
+    # Signal Sharpe check
+    cs_bt = bt_df.filter(pl.col("case_study") == display_name)
+    if not cs_bt.is_empty():
+        sig_sr = cs_bt["signal_sharpe"][0]
+        if sig_sr is not None and sig_sr > 0:
+            attrition["tradable_gross"] += 1
+
+        # Cost check (from bt_df survives_costs)
+        surv = cs_bt["survives_costs"][0] if cs_bt["survives_costs"][0] is not None else False
+        if surv:
+            attrition["cost_surviving"] += 1
+
+        # Risk check (from bt_df managed_sharpe)
+        mgd = cs_bt["managed_sharpe"][0]
+        if mgd is not None and mgd > 0:
+            attrition["risk_tolerable"] += 1
+
+    # Holdout check
+    cs_ho = (
+        holdout_df.filter(pl.col("cs_id") == cs) if not holdout_df.is_empty() else pl.DataFrame()
+    )
+    if not cs_ho.is_empty():
+        ho_sr = cs_ho["holdout_sharpe"][0]
+        if ho_sr is not None and ho_sr > 0:
+            attrition["holdout_valid"] += 1
+
+print("\n=== Stage Attrition Funnel ===")
+total = len(ALL_CASE_STUDIES)
+for stage, count in attrition.items():
+    bar = "█" * count + "░" * (total - count)
+    print(f"  {stage:20s}  {bar}  {count}/{total}")
+
+# %% [markdown]
+# Each row is an independent count: how many of the nine case studies pass that one gate,
+# tested against `bt_df` and `holdout_df` rather than against the set that cleared the gate
+# above it. A row's own failures are nine minus its count. The difference between two adjacent
+# rows is not how many case studies a gate removed, because two gates can pass the same number
+# while failing different case studies, and a case study can appear in a lower row without
+# appearing in a higher one. See NB08 for the cumulative funnel, where each gate is applied to
+# the survivors of the one above it and the drop-outs are named at each cut. Whatever holdout
+# rate these counts give, it does not account for evidence quality, which the next section
+# addresses.
+
+# %% [markdown]
+# ## Measurement Quality Disclosures
+#
+# Rather than a single trust label per case study, we surface the measurement characteristics
+# that decide how far a selected configuration's number should be trusted: how much the per-fold
+# Sharpe moves around, how many folds are positive, how wide the spread is to the tenth-ranked
+# configuration, and how severe the validation-to-holdout decay is. These are independent
+# axes; a case study can have narrow per-fold dispersion but sharp holdout
+# decay (signal is temporally stable in validation but doesn't generalize
+# forward), or vice versa. Collapsing these into "high-confidence /
+# provisional / unreliable" hides the trade-off the reader needs to see.
+
+# %%
+measurement_rows = []
+for cs in ALL_CASE_STUDIES:
+    display_name = DISPLAY_NAMES.get(cs, cs)
+    cluster_row = (
+        cluster_df.filter(pl.col("cs_id") == cs) if not cluster_df.is_empty() else pl.DataFrame()
+    )
+    ho_row = (
+        holdout_df.filter(pl.col("cs_id") == cs) if not holdout_df.is_empty() else pl.DataFrame()
+    )
+    cs_assessment_cluster = cluster_row.to_dicts()[0] if not cluster_row.is_empty() else {}
+    cs_assessment_ho = ho_row.to_dicts()[0] if not ho_row.is_empty() else {}
+
+    rank1 = cs_assessment_cluster.get("rank1_sharpe")
+    rank10_spread = cs_assessment_cluster.get("rank1_rank10_spread")
+    fold_se = cs_assessment_cluster.get("fold_sharpe_se")
+    n_folds_pos = cs_assessment_cluster.get("n_folds_pos") or 0
+    n_folds = cs_assessment_cluster.get("n_folds") or 0
+    ho_sharpe = cs_assessment_ho.get("holdout_sharpe")
+    decay = (rank1 - ho_sharpe) if (rank1 is not None and ho_sharpe is not None) else None
+
+    measurement_rows.append(
+        {
+            "case_study": display_name,
+            "cs_id": cs,
+            "rank1_val_sharpe": rank1,
+            "rank1_rank10_spread": rank10_spread,
+            "fold_sharpe_se": fold_se,
+            "n_folds_positive": n_folds_pos,
+            "n_folds": n_folds,
+            "holdout_sharpe": ho_sharpe,
+            "validation_holdout_decay": decay,
+        }
+    )
+
+measurement_df = pl.DataFrame(measurement_rows)
+print("\n=== Measurement Quality Disclosures ===")
+print(
+    measurement_df.select(
+        "case_study",
+        "rank1_val_sharpe",
+        "rank1_rank10_spread",
+        "fold_sharpe_se",
+        "n_folds_positive",
+        "n_folds",
+        "holdout_sharpe",
+        "validation_holdout_decay",
+    )
+)
+
+# %% [markdown]
+# ## Variant Analysis
+#
+# All signal-stage model variants across case studies — IC, Sharpe, and
+# share of variants with positive Sharpe. Used by NB03 for detailed
+# cross-variant analysis.
+
+
+# %%
+def build_variant_rows():
+    """Collect all signal-stage model variants across case studies."""
+    variant_rows = []
+    for cs, explorer in explorers.items():
+        case_dir = get_case_study_dir(cs)
+        db_path = case_dir / "run_log" / "registry.db"
+        if not db_path.exists():
+            continue
+
+        primary_label = configs.get(cs, {}).get("labels", {}).get("primary", "")
+        db = sqlite3.connect(str(db_path))
+        var_query = """
+            SELECT t.family || '/' || t.config_name AS source, t.family,
+                   MAX(pm.ic_mean) AS ic,
+                   MAX(bm_s.sharpe) AS sharpe
+            FROM training_runs t
+            JOIN prediction_sets p ON t.training_hash = p.training_hash
+            LEFT JOIN prediction_metrics pm
+                ON p.prediction_hash = pm.prediction_hash
+            LEFT JOIN backtest_runs b
+                ON p.prediction_hash = b.prediction_hash AND b.stage = 'signal'
+            LEFT JOIN backtest_metrics bm_s
+                ON b.backtest_hash = bm_s.backtest_hash
+            WHERE p.split != 'holdout'
+              AND (pm.ic_mean IS NOT NULL OR bm_s.sharpe IS NOT NULL)
+              AND t.family != 'causal_dml'
+        """
+        var_params: tuple = ()
+        if primary_label:
+            var_query += "      AND t.label = ?\n"
+            var_params = (primary_label,)
+        var_query += "    GROUP BY t.family, t.config_name"
+        rows = db.execute(var_query, var_params).fetchall()
+        db.close()
+
+        for source, family, ic_val, sharpe_val in rows:
+            variant_rows.append(
+                {
+                    "case_study": DISPLAY_NAMES.get(cs, cs),
+                    "cs_id": cs,
+                    "cadence": FREQ_MAP.get(cs, "unknown"),
+                    "source": source or "",
+                    "family": family or "",
+                    "ic": ic_val,
+                    "sharpe": sharpe_val,
+                    "positive_sharpe": sharpe_val is not None and sharpe_val > 0,
+                }
+            )
+    return variant_rows
+
+
+# %% [markdown]
+# The schema is declared rather than inferred. Polars reads the leading rows to guess a column's
+# type, and a registry that has no metrics yet contributes rows whose `ic` and `sharpe` are all
+# null - enough of them and the guess comes back as a null column, which then refuses the first
+# real float that arrives behind it. Declaring the types makes an empty registry contribute
+# missing values instead of breaking the frame.
+
+# %%
+variant_rows = build_variant_rows()
+
+# %%
+variant_df = pl.DataFrame(
+    variant_rows,
+    schema={
+        "case_study": pl.String,
+        "cs_id": pl.String,
+        "cadence": pl.String,
+        "source": pl.String,
+        "family": pl.String,
+        "ic": pl.Float64,
+        "sharpe": pl.Float64,
+        "positive_sharpe": pl.Boolean,
+    },
+)
+print(f"\n=== Variant Analysis: {len(variant_df)} variants ===")
+if not variant_df.is_empty():
+    print(
+        variant_df.group_by("case_study")
+        .agg(n=pl.len(), pct_positive=((pl.col("positive_sharpe").sum()) / pl.len() * 100))
+        .sort("case_study")
+    )
+
+# %% [markdown]
+# The `pct_positive` column reports the share of a case study's signal-stage model variants
+# whose baseline Sharpe is positive. It is a property of the variant space rather than of the
+# selected configuration: a case study can carry a strong selected row and a low positive-Sharpe
+# share, or the reverse.
+#
+# One caveat applies to the option case studies, and it is large. The positive-Sharpe rate here
+# is measured **before execution costs**. The hold-to-maturity short-straddle backtest in §20.6
+# charges the full option bid-ask and commissions and reports the rate that survives them.
+
+# %% [markdown]
+# ## Synthesis JSON
+#
+# Build `all_synthesis.json` — the per-case-study summary consumed by
+# notebooks 02–06 and `generate_figures.py`. All values are queried
+# from `registry.db` and `setup.yaml`; nothing is hardcoded.
+
+# %% [markdown]
+# Pinning a case study to its spine prediction stops cost and risk figures being
+# pooled out of full-universe rows when the selected strategy runs on a
+# restricted subset, and `build_all_synthesis` raises rather than pool silently.
+# That guard is aimed at a pin which fails to match rows that do exist, meaning
+# the pin has gone stale. A case study whose registry holds no backtests at all
+# has nothing to pool and nothing to be stale against, and pinning it would abort
+# the nine-case-study aggregation over one empty registry. Those are left
+# unpinned, and their cost and risk entries are reported as not applicable.
+
+# %%
+_PINNED_WITH_EVIDENCE = frozenset(
+    row["case_study_id"]
+    for row in bt_rows
+    if row["case_study_id"] in _CLUSTER_RUNG_RESTRICTIONS
+    and (row["n_signal"] + row["n_allocation"] + row["n_risk"]) > 0
+)
+
+from case_studies.utils.strategy_analysis import build_all_synthesis
+
+synthesis_dict = build_all_synthesis(
+    case_studies=ALL_CASE_STUDIES,
+    explorers=explorers,
+    configs=configs,
+    ic_df=ic_df,
+    bt_df=bt_df,
+    holdout_df=holdout_df,
+    assessments={},
+    display_names=DISPLAY_NAMES,
+    asset_class_map=ASSET_CLASS_MAP,
+    freq_map=FREQ_MAP,
+    pin_cost_risk_to_spine=_PINNED_WITH_EVIDENCE,
+    allow_missing_spine=ALLOW_MISSING_SPINE,
+)
+
+# Strip pipeline stages that don't apply to a case study's canonical
+# strategy. sp500_options under the HTM short-straddle discipline has no
+# generic allocation stage (capital is 1/n_roll equal-weight across
+# overlapping cohorts by construction), no generic cost_sensitivity
+# stage (the §18.8 cascade uses option-native bid-ask accounting, not a
+# bps sweep), and no generic risk_overlay stage (the expiration
+# structure of the strategy sets the risk profile). us_firm_characteristics
+# skips risk_overlay because the vectorized-engine code path used for the
+# monthly long-short panel does not consume position-level overlays, and
+# portfolio-level overlays were purged 2026-05-17 (`f3d7fa8f`) after the
+# permanent-halt zero-std Sharpe artifact was diagnosed. Rationale strings
+# live in `_STAGE_NA_REASONS` so two CSes that skip the same stage for
+# different reasons render different prose. `_STAGES_NOT_APPLICABLE` is
+# defined once near the top of the notebook and consumed both here (for
+# `synthesis_dict` JSON) and inside `build_backtest_rows` (for `bt_df`)
+# so the two artifacts cannot drift on the same case study.
+for _cs, _stages in _STAGES_NOT_APPLICABLE.items():
+    if _cs not in synthesis_dict:
+        continue
+    _ps = synthesis_dict[_cs].get("pipeline_summary", {})
+    if "allocation" in _stages:
+        _ps["allocation"] = {
+            "best_allocator": None,
+            "best_sharpe": None,
+            "allocator_comparison": {},
+            "not_applicable_reason": _STAGE_NA_REASONS[(_cs, "allocation")],
+        }
+    if "costs" in _stages:
+        _ps["costs"] = {
+            "actual_bps": None,
+            "breakeven_bps": None,
+            "survives_costs": None,
+            "gross_sharpe_at_zero": None,
+            "net_sharpe_at_actual": None,
+            "capacity_usd_10pct": None,
+            "not_applicable_reason": _STAGE_NA_REASONS[(_cs, "costs")],
+        }
+    if "risk" in _stages:
+        _ps["risk"] = {
+            "best_overlay": None,
+            "baseline_sharpe": None,
+            "managed_sharpe": None,
+            "managed_max_dd": None,
+            "overlay_sharpe_delta": None,
+            "overlay_count": 0,
+            "not_applicable_reason": _STAGE_NA_REASONS[(_cs, "risk")],
+        }
+
+print(f"\nBuilt synthesis JSON for {len(synthesis_dict)} case studies")
+for cs_id, cs_data in synthesis_dict.items():
+    models = cs_data["pipeline_summary"]["models"]
+    best_fam = max(models.items(), key=lambda x: x[1].get("ic_mean") or 0) if models else ("", {})
+    best_ic = best_fam[1].get("ic_mean", 0) if best_fam[1] else 0
+    print(f"  {cs_id}: {len(models)} families, best IC={best_ic}")
+
+# %% [markdown]
+# ## Save Aggregated DataFrames
+#
+# Export for use by downstream notebooks (02–06).
+#
+# **A subset run writes none of these.** Downstream notebooks and the chapter figures read
+# every path below as a complete set covering all nine case studies, so a run restricted to
+# one case study would replace nine case studies' worth of tables with one's. Its job is the
+# paired metrics it has already written into that case study's own registry, and it stops
+# here.
+
+
+# %%
+def write_chapter_artifacts(
+    output_dir: Path,
+    frames: dict[str, pl.DataFrame | None],
+    documents: dict[str, object],
+    *,
+    subset: list[str],
+) -> list[str]:
+    """Write the chapter-wide artifacts and return their names, or write none for a subset run.
+
+    A ``None`` frame is one there is nothing to write; the caller decides which tables are
+    allowed to be absent and which have to exist even when empty.
+    """
+    if subset:
+        print(
+            "Subset run over "
+            f"{subset}: chapter-wide artifacts left as they are. They cover every case "
+            "study, and a subset cannot produce them."
+        )
+        return []
+    written: list[str] = []
+    for name, frame in frames.items():
+        if frame is None:
+            continue
+        frame.write_parquet(output_dir / name)
+        written.append(name)
+    for name, payload in documents.items():
+        (output_dir / name).write_text(json.dumps(payload, indent=2))
+        written.append(name)
+    return written
+
+
+# `holdout_results.parquet` and `measurement_quality.parquet` are written even when empty,
+# unlike their neighbours. 04_signal_to_strategy and 08_recommendations both read them with a
+# bare `pl.read_parquet`, and 08 already distinguishes "no holdout row for this case study"
+# from "failed a gate" - so an empty table is a state it can report, while an absent file is a
+# FileNotFoundError in its fifth cell. The CI fixture seeds no holdout rows for any case study,
+# which is the all-empty case.
+saved = write_chapter_artifacts(
+    OUTPUT_DIR,
+    {
+        "overview.parquet": overview_df,
+        "ic_comparison.parquet": None if ic_df.is_empty() else ic_df,
+        "backtest_comparison.parquet": bt_df,
+        "sharpe_progression.parquet": None if prog_df.is_empty() else prog_df,
+        "lineage.parquet": None if lineage_df.is_empty() else lineage_df,
+        "holdout_results.parquet": holdout_df,
+        "rank1_cluster_diagnostics.parquet": None if cluster_df.is_empty() else cluster_df,
+        "measurement_quality.parquet": measurement_df,
+        "variant_analysis.parquet": None if variant_df.is_empty() else variant_df,
+    },
+    {
+        "stage_attrition.json": {"total": total, "stages": attrition},
+        "all_synthesis.json": synthesis_dict,
+    },
+    subset=CASE_STUDIES,
+)
+
+# Relative to the repository root: an absolute path is specific to the machine
+# that ran the notebook and tells a reader nothing.
+if saved:
+    print(f"\nSaved aggregated data to {OUTPUT_DIR.relative_to(REPO_ROOT)}")
+    for name in saved:
+        print(f"  {name}: {(OUTPUT_DIR / name).stat().st_size / 1024:.1f} KB")
+
+# %% [markdown]
+# ## What the Empty Cells Mean
+#
+# Several tables above carry nulls for whole case studies. A null here is not a
+# failed strategy, it is an absent measurement: those case studies are being
+# rebuilt and their registries hold no backtest rows yet, so there is nothing
+# for the aggregation to read. Predictions and their IC survive the rebuild -
+# those are in `prediction_metrics`, a separate table - which is why a case study
+# can have an IC in the family comparison and nulls everywhere downstream of it.
+# The cell below names which ones, rather than leaving the reader to infer it
+# from a pattern of blanks.
+
+# %% tags=["results"]
+_empty = [
+    row["case_study"]
+    for row in bt_rows
+    if (row["n_signal"] + row["n_allocation"] + row["n_cost"] + row["n_risk"]) == 0
+]
+display(
+    Markdown(
+        f"**{len(_empty)} of {len(bt_rows)} case studies have no registered backtests**: "
+        + (", ".join(_empty) if _empty else "none")
+        + ". Every backtest-derived column is null for these, and the stage "
+        "attrition counts above treat them as not reaching the tradable stage."
+    )
+)
+
+# %% [markdown]
+# ## Artifacts Produced
+#
+# This notebook aggregates registry state across all 9 case studies into
+# the comparison tables consumed by notebooks 02–06 and by the Ch20 figure
+# generator. All quantitative data is sourced from `registry.db` and
+# `setup.yaml` per case study; nothing is hardcoded.
+#
+# - `overview.parquet`: Case study metadata (asset class, frequency, universe
+#   size, cost assumptions, primary label, number of model families).
+# - `ic_comparison.parquet`: Top-ranked per-family IC per case study, for the
+#   model-family comparison of Table 20.4 in §20.3, read by notebooks 03 and 04.
+# - `backtest_comparison.parquet`: Per-(case-study, stage) Sharpe / CAGR /
+#   drawdown for the selected configuration at each pipeline stage.
+# - `sharpe_progression.parquet`: Stage-by-stage Sharpe for the selected
+#   configuration per case study.
+# - `lineage.parquet`: The stage-path from signal → allocation → cost →
+#   risk for the selected configuration per case study.
+# - `holdout_results.parquet`: Validation-vs-holdout Sharpe for the selected
+#   configuration, used for the validation→holdout decay analysis in §20.1.
+# - `rank1_cluster_diagnostics.parquet`: top-ranked and tenth-ranked Sharpe,
+#   the spread between them, the fold standard error and the folds-positive
+#   count for each case study — the measurement that lets readers judge how
+#   stable each selection is. The filename predates the vocabulary and is kept
+#   because downstream notebooks read it by name.
+# - `measurement_quality.parquet`: Per-case-study disclosures (fold standard
+#   error, the top-to-tenth spread, folds-positive fraction, holdout decay) —
+#   the evidence the reader needs to weigh, unbundled from any single
+#   trust label.
+# - `variant_analysis.parquet`: All model variants per case study with IC,
+#   Sharpe, and positive-Sharpe indicator — supports the variant-space
+#   density discussion in §20.3.
+# - `stage_attrition.json`: Pipeline funnel counts by stage.
+# - `all_synthesis.json`: The combined per-case-study summary consumed by
+#   downstream notebooks.
+#
+# The framing throughout is measurement-first: every number is a registry
+# read with known uncertainty (per-fold SE, rank-cluster width), and the
+# downstream notebooks interpret those measurements rather than collapse
+# them into categorical labels.
+#
+# **Next**: [`02_feature_evaluation`](02_feature_evaluation.ipynb) for the
+# cross-case-study feature evaluation, then [`03_signal_quality`](03_signal_quality.ipynb)
+# for the IC landscape and model family comparison.

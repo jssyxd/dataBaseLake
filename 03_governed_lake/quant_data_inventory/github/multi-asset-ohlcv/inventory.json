@@ -1,0 +1,131 @@
+{
+  "repo": "https://github.com/JasonleeQAQ/multi-asset-ohlcv",
+  "total_files": 31,
+  "total_size_bytes": 48394,
+  "files": [
+    {
+      "file": "README.md",
+      "size_bytes": 13138
+    },
+    {
+      "file": ".git/index",
+      "size_bytes": 137
+    },
+    {
+      "file": ".git/config",
+      "size_bytes": 275
+    },
+    {
+      "file": ".git/HEAD",
+      "size_bytes": 21
+    },
+    {
+      "file": ".git/packed-refs",
+      "size_bytes": 112
+    },
+    {
+      "file": ".git/shallow",
+      "size_bytes": 41
+    },
+    {
+      "file": ".git/description",
+      "size_bytes": 73
+    },
+    {
+      "file": ".git/logs/HEAD",
+      "size_bytes": 190
+    },
+    {
+      "file": ".git/logs/refs/heads/main",
+      "size_bytes": 190
+    },
+    {
+      "file": ".git/logs/refs/remotes/origin/HEAD",
+      "size_bytes": 190
+    },
+    {
+      "file": ".git/refs/remotes/origin/HEAD",
+      "size_bytes": 30
+    },
+    {
+      "file": ".git/refs/tags/1.0.0",
+      "size_bytes": 41
+    },
+    {
+      "file": ".git/refs/heads/main",
+      "size_bytes": 41
+    },
+    {
+      "file": ".git/objects/pack/pack-82bf601b758ea1ad64caeda49682f13a839252c4.idx",
+      "size_bytes": 1156
+    },
+    {
+      "file": ".git/objects/pack/pack-82bf601b758ea1ad64caeda49682f13a839252c4.rev",
+      "size_bytes": 64
+    },
+    {
+      "file": ".git/objects/pack/pack-82bf601b758ea1ad64caeda49682f13a839252c4.pack",
+      "size_bytes": 6628
+    },
+    {
+      "file": ".git/info/exclude",
+      "size_bytes": 240
+    },
+    {
+      "file": ".git/hooks/fsmonitor-watchman.sample",
+      "size_bytes": 4726
+    },
+    {
+      "file": ".git/hooks/post-update.sample",
+      "size_bytes": 189
+    },
+    {
+      "file": ".git/hooks/push-to-checkout.sample",
+      "size_bytes": 2783
+    },
+    {
+      "file": ".git/hooks/sendemail-validate.sample",
+      "size_bytes": 2308
+    },
+    {
+      "file": ".git/hooks/pre-merge-commit.sample",
+      "size_bytes": 416
+    },
+    {
+      "file": ".git/hooks/pre-commit.sample",
+      "size_bytes": 1649
+    },
+    {
+      "file": ".git/hooks/applypatch-msg.sample",
+      "size_bytes": 478
+    },
+    {
+      "file": ".git/hooks/pre-push.sample",
+      "size_bytes": 1374
+    },
+    {
+      "file": ".git/hooks/commit-msg.sample",
+      "size_bytes": 896
+    },
+    {
+      "file": ".git/hooks/pre-applypatch.sample",
+      "size_bytes": 424
+    },
+    {
+      "file": ".git/hooks/pre-receive.sample",
+      "size_bytes": 544
+    },
+    {
+      "file": ".git/hooks/update.sample",
+      "size_bytes": 3650
+    },
+    {
+      "file": ".git/hooks/prepare-commit-msg.sample",
+      "size_bytes": 1492
+    },
+    {
+      "file": ".git/hooks/pre-rebase.sample",
+      "size_bytes": 4898
+    }
+  ]
+}

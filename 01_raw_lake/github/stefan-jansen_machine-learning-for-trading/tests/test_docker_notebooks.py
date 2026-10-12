@@ -1,0 +1,119 @@
+"""Test notebooks that require Docker environments (py312, neo4j, benchmark).
+
+Same as test_chapter_notebooks.py, and it honours the same skip declarations.
+
+It used to ignore them. The reason it gave was that a skip meant a missing module
+(signatory, gensim, esig, tfcausalimpact, Neo4j) and the image supplies it, so
+running anyway was how those notebooks got covered at all. That premise has
+expired: a notebook whose dependency lives in an image now carries ``docker_env``
+and ``requires_import`` with no ``skip``, and every remaining ``skip: true`` in
+overrides.yaml declares a ``skip_blocker`` naming a fixture, registry or external
+condition. An image does not grow the fixture a shortfall names, register a
+candidate set, or attach a CUDA device, so ignoring the skip did not run those
+notebooks under a cured condition - it ran them under a condition still true and
+collected the failure the declaration predicted.
+
+Honouring the skip is not a coverage loss, because ``honoured_skip_reason``
+honours it only while its blocker still holds. A fixture that grows the file or an
+image that gains the module retires the skip with no edit here, and
+``tests/test_skip_blockers.py`` fails the build on a declaration that has expired.
+
+Usage:
+    # Py312 notebooks (signatory, gensim, esig, tfcausalimpact, torch CUDA bug)
+    python -m pytest tests/test_docker_notebooks.py -v -k "03_sigcwgan or ..."
+
+    # Neo4j notebooks
+    python -m pytest tests/test_docker_notebooks.py -v -k "08_8k_event_extraction or ..."
+
+    # Benchmark notebooks
+    python -m pytest tests/test_docker_notebooks.py -v -k "18_storage_benchmark_database or ..."
+"""
+
+from pathlib import Path
+
+import pytest
+
+from tests.pm_helpers import (
+    check_kernel_routing,
+    collect_chapter_notebooks,
+    current_test_tier,
+    get_overrides,
+    get_tier,
+    gpu_skip_reason,
+    run_notebook,
+)
+from tests.skip_blockers import honoured_skip_reason
+
+REPO_ROOT = Path(__file__).parent.parent
+
+# Collect all chapter teaching notebooks (Ch01-Ch26) + data layer
+CHAPTER_RANGE = range(1, 27)
+CHAPTER_NOTEBOOKS = collect_chapter_notebooks(REPO_ROOT, CHAPTER_RANGE)
+for notebook in sorted(REPO_ROOT.glob("data/**/dataset_card.py")):
+    CHAPTER_NOTEBOOKS.append(notebook)
+
+
+@pytest.mark.parametrize(
+    "notebook_path",
+    CHAPTER_NOTEBOOKS,
+    ids=lambda p: p.relative_to(REPO_ROOT).as_posix().replace("/", "::"),
+)
+def test_docker_notebook(notebook_path, populated_data_dir, seeded_output_dir):
+    """Execute a notebook via Papermill, ignoring skip flags.
+
+    Identical to test_chapter_notebook() but does NOT honor the 'skip' key
+    in overrides.yaml. This allows Docker-based CI jobs to run notebooks
+    that are skipped in the uv-native environment due to missing modules.
+
+    GPU skips are still honored (Docker CI runners have no GPU).
+    """
+    rel_path = notebook_path.relative_to(REPO_ROOT).with_suffix("")
+    overrides = get_overrides(str(rel_path))
+
+    # Tier routing still applies — Docker tests are normally per_commit, but
+    # this honors the same env-driven gating used by the uv-native runners.
+    nb_tier = get_tier(overrides)
+    run_tier = current_test_tier()
+    if nb_tier != run_tier:
+        pytest.skip(f"Tier {nb_tier} — current run tier is {run_tier}")
+
+    # Honoured only while the blocker its reason rests on still holds, so this cannot
+    # hide a notebook whose condition has lifted - that one runs here as before. See the
+    # module docstring for why ignoring the skip stopped being the right default.
+    if reason := honoured_skip_reason(overrides):
+        pytest.skip(f"Skipped: {reason}")
+
+    # GPU requirement still applies (CI runners have no GPU)
+    reason = gpu_skip_reason(overrides)
+    if reason:
+        pytest.skip(reason)
+
+    timeout = overrides.get("timeout", 300)
+    parameters = overrides.get("parameters", {})
+
+    # Some py312 notebooks need a venv other than the one running pytest. Broken
+    # routing means the image is stale or the override is mistyped; skipping there
+    # would let the job pass without ever running the notebook.
+    routing = check_kernel_routing(overrides)
+    if routing.problem:
+        pytest.fail(f"{rel_path}: {routing.problem}")
+
+    result = run_notebook(
+        py_path=notebook_path,
+        parameters=parameters,
+        timeout=timeout,
+        output_dir=seeded_output_dir,
+        data_dir=populated_data_dir,
+        kernel_python=routing.python,
+        kernel_launcher=routing.launcher,
+        research_preview=True,
+    )
+
+    if result["status"] == "error":
+        pytest.fail(
+            f"\n{'=' * 70}\n"
+            f"Notebook failed: {rel_path}\n"
+            f"{'=' * 70}\n"
+            f"Error: {result['error']}\n"
+            f"{'=' * 70}\n"
+        )

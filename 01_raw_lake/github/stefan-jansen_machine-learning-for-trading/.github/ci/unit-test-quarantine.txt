@@ -1,0 +1,253 @@
+# What `test-unit`'s whole-directory sweep does not run, and why.
+#
+# The sweep runs `pytest tests/` and subtracts this file, so a new test file is
+# gated the moment it is added and a file leaves the gate only by being written
+# down here with a reason. Before this inverted the default, 118 of the repo's
+# 163 test files ran in no CI job at all: the job named the files it ran, and a
+# file nobody added to the list was silently never executed. Measured
+# 2026-08-24 on f911cf36 - 1529 tests, in the repo, passing or failing with
+# nothing watching either way.
+#
+# A bare path is `--ignore=<path>` (the whole file); a path with `::` is
+# `--deselect=<nodeid>` (that test only). Prefer the nodeid: quarantining a
+# file for one failing test throws away the coverage of the ones that pass.
+#
+# Every entry needs a reason, and "it fails" is not one. Say what it needs that
+# this job does not have, or name the defect and who owns it.
+
+# ---------------------------------------------------------------------------
+# Needs the modelling environment - run by test-unit-image, in ml4t/ml4t:latest.
+# 46 files. The 26 that existed on 2026-08-24 measured 392 tests, 3m21s.
+# The count read 47 against 44 entries before 2026-09-18, and the recount offered
+# then was keyed on literal line numbers, which every insert above them invalidates.
+# Keyed on the two section headings instead, and the answer checked against the
+# number above before it was written here:
+#   awk '/^# Needs the modelling environment/{f=1} /^# Executes notebooks through Papermill/{f=0} f&&/^tests\//{n++} END{print n+0}' .github/ci/unit-test-quarantine.txt
+#
+# It is long; leave it long. Wrapped across several lines each one would need its own
+# `#` and would therefore be a separate shell comment, so pasting the command would
+# print nothing - which is how a recount command quietly stops being run.
+#
+# `case_studies/utils/gbm.py` imports torch at module scope, so the LightGBM
+# files are behind this boundary too even though LightGBM itself is a small
+# wheel. The multi-GB estimate this block used to carry is right, and it is not
+# torch that makes it so: importing them pulls 110 distributions, because
+# ml4t-models brings shap, numba and xarray, and four files bring darts with
+# pytorch-lightning, transformers and triton behind it. A CPU torch wheel is
+# 184 MB and would not reach any of them.
+#
+# These stay excluded from THIS job's sweep, which has the fast dependency set.
+# The exclusion no longer means unrun: until 2026-08-24 the image job named here
+# did not exist, so it did.
+#
+# `test_latent_factors_identity` and `test_tabular_dl_identity` were added on
+# 2026-08-25 with the us_firm_characteristics modelling pass and are behind the
+# same boundary for the same reason. The second imports torch directly; the
+# first reaches it through `case_studies/utils/tabular_dl.py:41` and the
+# latent-factor runners. Both were red on `test-unit` at collection - a new
+# test file is gated the moment it is added, which is what this file inverting
+# the default is for.
+#
+# `test_gbm_holdout_rekey` was added on 2026-08-30 with the GBM holdout re-keying
+# hook. It imports `case_studies/utils/gbm.py`, which is the boundary itself.
+#
+# `test_holdout_expected_keys`, `test_holdout_force_regenerates` and
+# `test_holdout_selection_is_single_sourced` were all deselected here because
+# `20_strategy_synthesis/holdout.py`, since deleted, imported torch and lightgbm at module
+# scope to win an OpenMP load-order race for the `_train_*` family it dispatched to.
+# Retiring that family removed both imports, so all three left this section: the first two
+# are deleted with the code they pinned, and the third now runs in `test-unit` and reads
+# `case_studies/utils/strategy_analysis.py`, which never imported either package.
+#
+# Measured with the packages genuinely hidden, not with `sys.modules` stubbed. Only two
+# things ask for torch in that test's whole import set, and neither is a dependency:
+# polars probes `find_spec("torch")` in `_lazy_import`, which answers None when it is
+# absent, and `utils/config.py:98` does `import torch as _torch` inside a
+# `try/except ImportError: pass` that prepends the CUDA runtime to LD_LIBRARY_PATH.
+# Reading `sys.modules` says torch is LOADED when it is installed, which is true and is
+# a different question from whether it is required - the distinction that kept this
+# entry alive one revision too long.
+# ---------------------------------------------------------------------------
+# The three files the etfs deep-learning and latent-factor pass added are behind
+# the same boundary. `test_common_sample_daily_ic` tests one pure polars
+# function, but `case_studies/utils/model_analysis.py` imports lightgbm at
+# module scope; `test_latent_epoch_ic_over_dates` imports torch directly; and
+# `test_lightning_announcement_silence` reaches pytorch_lightning through
+# `case_studies/utils/darts_forecasting.py`. All three were red on `test-unit`
+# at collection, and all three run in `test-unit-image`.
+# ---------------------------------------------------------------------------
+tests/test_crypto_modeling_lineage.py
+tests/test_common_sample_daily_ic.py
+tests/test_cv_cached_results.py
+tests/test_darts_state.py
+tests/test_darts_temporal.py
+tests/test_deep_learning_adapter.py
+tests/test_deep_learning_state.py
+tests/test_deep_model_state.py
+tests/test_dl_device_contract.py
+tests/test_dl_force_retrain_identity.py
+tests/test_gbm_classification_target.py
+tests/test_gbm_holdout_rekey.py
+tests/test_gbm_identity.py
+tests/test_gbm_runtime.py
+tests/test_insight_chapter.py
+tests/test_insight_selection_reads_the_fold_geometry.py
+tests/test_insight_selection_reads_the_live_generation.py
+tests/test_latent_epoch_ic_over_dates.py
+tests/test_latent_factors_identity.py
+tests/test_latent_factors_no_leak.py
+tests/test_latent_input_identity.py
+tests/test_lightning_announcement_silence.py
+tests/test_family_hook_dispatch.py
+tests/test_model_analysis_selection.py
+tests/test_model_source_identity_versions.py
+# The gather this file tests is the torch one: it builds a FoldSequenceDataset and
+# runs a DataLoader over it, so it imports torch directly rather than reaching it
+# through the module under test.
+tests/test_sequence_batch_gather.py
+# `test_prediction_sequence_cap` tests the same module as `test_sequence_dataset`
+# below. `case_studies/utils/sequence_dataset.py` imports torch at :10 for the
+# Dataset subclass; these cases exercise the index builders, which never touch it.
+tests/test_prediction_sequence_cap.py
+tests/test_registry_metrics.py
+tests/test_research_contract_execution.py
+tests/test_research_model_planning.py
+tests/test_research_models.py
+tests/test_sae_batch_size.py
+tests/test_sdf_checkpoint_numbering.py
+tests/test_sdf_macro_context.py
+tests/test_sequence_dataset.py
+# case_studies/utils/deep_learning.py imports torch at module scope (:42), and
+# this module imports sequence_identity_params from it.
+tests/test_sequence_identity_roundtrip.py
+# Behind the same import. The point of these cases is that the two holdout
+# re-key hooks read their keys from the same functions the validation path uses
+# rather than restating the rule, so they monkeypatch `sequence_validation_keys`,
+# `darts_validation_keys` and `_tabm_expected_keys` in place - which means
+# importing the modules that define them, and both reach torch.
+tests/test_sequence_holdout_rekey.py
+# Only one of its checks reaches torch - the reduction vocabulary is read from the
+# runners themselves rather than restated, so it imports deep_learning. The whole file
+# moves because this section and test-unit-image's list are one decision, and
+# test_the_image_job_runs_exactly_what_is_quarantined_for_it holds them to it.
+tests/test_smoke_configs.py
+tests/test_tabular_dl.py
+tests/test_tabular_dl_adapter.py
+tests/test_tabular_dl_identity.py
+tests/test_tabular_dl_runtime.py
+tests/test_training_identity_migration.py
+# Three files added on 2026-09-07 with the model-families infrastructure pass, all
+# behind the same import boundary.
+#
+# `test_latent_convergence_guard` fits a real SDF, CAE and SAE through
+# `latent_factors/library_bridge.py`, which imports torch and `ml4t.models` at module
+# scope - the convergence determination it pins is what those runners record, so a double
+# would not test it.
+tests/test_latent_convergence_guard.py
+# `test_fold_seed_coupling` asserts that the four modules seeding a fold from its index
+# reach one derivation, so it imports `tabular_dl`, `deep_learning` and
+# `darts_forecasting`, which reach torch, and `gbm`, which reaches lightgbm.
+tests/test_fold_seed_coupling.py
+# `test_model_catalog_columns` reads `GBM_MODEL_CLASS` and `TABM_MODEL_CLASS` off the
+# runners rather than repeating the strings - which is the coupling it exists to hold -
+# and both modules are the boundary itself. Its sibling `test_research_configs.py` stays
+# in this job: the catalog tests moved out of it for exactly this reason.
+tests/test_model_catalog_columns.py
+
+# ---------------------------------------------------------------------------
+# Executes notebooks through Papermill, against the reader's image and the
+# sub-sampled data. Running them here would be the same work twice and hours
+# instead of minutes. Each line names the job that does run it.
+#
+# Those jobs are NOT required contexts - only `guards`, `lint` and `test-unit`
+# gate a merge - so a red `cs-*` or `chNN` does not block. Excluding a file here
+# therefore moves it from "gated" to "watched", not to "covered". If the
+# per-case-study jobs are ever dropped or left red, these notebooks go unwatched
+# by a second route, and the subtraction below will not say so.
+#
+# The first three collect nothing but notebook executions, so the whole file
+# goes. `test_model_registry.py` does not: only `test_model_notebook` runs a
+# notebook, and its siblings are pure config assertions that finish in 0.14s.
+# Excluding the file threw those away, which is the same
+# exclude-more-than-you-meant defect the subtraction below exists to fix.
+# Count the deselect, not `def test_`: parametrization makes the two disagree,
+# and `test_registering_stage_maps_to_its_actual_entry_point` alone contributes
+# five. Measured 2026-09-12: 110 collected, 98 deselected, 12 left running
+# (2026-09-03 it was 105 / 94 / 11, so this number moves and is not a pin).
+#
+# `test_model_notebook` is the one exception to "each line names the job that
+# does run it", because no CI job CAN run it. It skips at
+# `tests/test_model_registry.py:532` when `case_studies/<case study>/features`
+# or `labels` is absent, and both are absent on every runner: `.gitignore:152`
+# and `:154` exclude them, nothing tracks them, and a maintainer worktree
+# reaches them through a symlink into `~/ml4t/artifacts`. Every parametrization
+# would skip, so wiring it into a job buys a green that executed nothing - which
+# is the failure this file's subtraction exists to prevent, arriving by the
+# other door. It is deselected here so the file's twelve siblings still run,
+# not because a job is missing.
+#
+# The residual gap, stated rather than implied: the end-to-end path - a notebook
+# runs, registers, and the `entry_point` it recorded names the notebook that
+# wrote it - executes nowhere in CI. `test_model_notebook` is the only test that
+# walks it, and a maintainer worktree is the only place it can. PR #1006's
+# `tests/test_entry_point_names_the_notebook.py` pins the resolver that chooses
+# the value, which is the half that runs without stage 01-05 inputs; nothing
+# observes what a real registration writes. That is why a stale `dl_tsmixer`
+# literal in this file's own query survived from the initial release commit.
+# ---------------------------------------------------------------------------
+tests/test_case_studies.py                       # cs-<case-study> (test-case-studies)
+tests/test_chapter_notebooks.py                  # chNN (test-chapters)
+tests/test_docker_notebooks.py                   # test-py312, test-neo4j, test-benchmark
+tests/test_model_registry.py::test_model_notebook  # no job can run it (see above); its siblings run here
+
+# ---------------------------------------------------------------------------
+# Needs the reader's Docker image. It walks every declared third-party import
+# in the notebook corpus - alpaca, arviz, catboost, dowhy, neo4j, vectorbt and
+# some sixty more - and resolves each one against the interpreter running it.
+# `test-chapters` is the job that has that image. The two nodeids this job does
+# run from the same file are named in the import-guard step above.
+tests/test_import_coverage.py::test_every_expected_import_resolves_in_current_image
+
+# Subprocesses a bare `import async_utils, limit_orderbook` from the repo root,
+# and the Chapter 3 helper it reaches imports nest_asyncio. Same job as the file
+# above: it wants the reader's image, not this dependency set.
+tests/test_chapter_imports.py::test_chapter_helper_imports_from_repo_root
+
+# ---------------------------------------------------------------------------
+# Red on main for a reason the rebuild will remove on its own. 54 committed
+# notebooks across eight case studies carry a provenance stamp naming an older
+# .py blob than the one beside them - the stages 06+ pass commits a corrected
+# source and re-executes later, which is the documented order. The test is
+# right and gating it now would block every PR until the last cohort finishes.
+# Take this line out when it does; the rest of the file still runs.
+# ---------------------------------------------------------------------------
+tests/test_notebook_sync.py::test_stamped_notebooks_are_current_and_production
+
+# ---------------------------------------------------------------------------
+# Reaches the network. Weekly, flake-tolerant, files its own issue.
+# ---------------------------------------------------------------------------
+tests/test_external_drift.py
+
+# ---------------------------------------------------------------------------
+# Needs a dataset - run by test-unit-data, which checks out the test-data
+# repository. This job checks out no test-data and points ML4T_DATA_PATH at the
+# repo's own `data/`, which holds loaders and no market data.
+#
+# These sat here from 2026-08-24 to 2026-09-03 excluded from this job and named
+# by no other, so the three files ran in no CI job at all - the defect the
+# subtraction above exists to prevent, reappearing one level down because
+# test-unit-data enumerates its files by hand. Measured against the test-data
+# checkout: 35 passed, 0 skipped, up from 14.
+# test_the_data_job_runs_exactly_what_is_quarantined_for_it in
+# tests/test_quarantine_list.py is what keeps this section and that job in step,
+# the same way the modelling-environment section is kept in step with
+# test-unit-image.
+# ---------------------------------------------------------------------------
+tests/test_artifact_specs.py
+tests/test_backtest_presets.py
+# `_etf_baseline.load_panel()` reads the ETF universe and has no skip guard; the
+# file is a parity check between the chapter helper and the notebook simulator,
+# and it is only meaningful against the real panel.
+tests/test_etf_baseline_parity.py
+tests/test_sp500_options_research.py::test_official_population_is_snapshotted_before_option_execution
+tests/test_us_firm_research_workflow.py::test_open_study_writes_canonical_results_to_output_dir

@@ -1,0 +1,442 @@
+"""Regression tests for coherent case-study prediction fixtures."""
+
+import sqlite3
+import warnings
+from datetime import date, datetime, timedelta
+
+import polars as pl
+import pytest
+
+from tests.fixtures.seed_results import _backfill_all_prediction_parquets
+
+
+def test_crypto_prediction_hashes_share_keys_and_targets(tmp_path):
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    run_log.mkdir(parents=True)
+    # Registered with training_hash/split, so the shared-panel invariant is checked
+    # on the same window-resolution path production takes. A registry carrying only
+    # prediction_hash makes the join raise and exercises the degrade path instead,
+    # which is not where the invariant has to hold.
+    with sqlite3.connect(run_log / "registry.db") as connection:
+        connection.execute(
+            "CREATE TABLE prediction_sets "
+            "(prediction_hash TEXT PRIMARY KEY, training_hash TEXT, split TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE training_runs (training_hash TEXT PRIMARY KEY, label TEXT)"
+        )
+        connection.execute("INSERT INTO training_runs VALUES ('train_a', 'funding_next_8h')")
+        connection.executemany(
+            "INSERT INTO prediction_sets VALUES (?, ?, ?)",
+            [("hash_a", "train_a", "validation"), ("hash_b", "train_a", "validation")],
+        )
+
+    reference_dir = run_log / "predictions" / "hash_a"
+    reference_dir.mkdir(parents=True)
+    reference = pl.DataFrame(
+        {
+            "symbol": ["ETHUSDT", "ETHUSDT", "BTCUSDT", "BTCUSDT"],
+            "timestamp": [date(2020, 1, 1), date(2020, 1, 2)] * 2,
+            "fold": [0, 0, 0, 0],
+            "prediction": [0.0, 0.1, 0.2, 0.3],
+            "actual": [1.0, 1.1, 1.2, 1.3],
+        }
+    )
+    reference.write_parquet(reference_dir / "predictions.parquet")
+
+    _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+    frames = [
+        pl.read_parquet(run_log / "predictions" / value / "predictions.parquet")
+        for value in ["hash_a", "hash_b"]
+    ]
+    assert (
+        frames[0]
+        .select("timestamp", "symbol", "actual")
+        .equals(frames[1].select("timestamp", "symbol", "actual"))
+    )
+    assert not frames[0]["prediction"].equals(frames[1]["prediction"])
+    # The group is seeded onto the panel the fixture already carries, rather than the
+    # artifact being replaced by a fabricated one: hash_a comes back untouched.
+    assert frames[0].equals(reference)
+
+
+def test_a_seeded_hash_joins_the_copied_artifact_it_shares_a_label_with(tmp_path):
+    """14/09_case_study_insights pairs a latent and a supervised prediction set of one
+    case study on their common (timestamp, entity) keys. Seeding the latent one onto a
+    fabricated grid of placeholder symbols while the supervised one is an artifact
+    copied from production leaves that join empty, which the notebook reported as
+    "Aligned targets disagree: maximum gap None" - max() over no rows.
+    """
+    cs_dir = tmp_path / "us_equities_panel"
+    run_log = cs_dir / "run_log"
+    run_log.mkdir(parents=True)
+    with sqlite3.connect(run_log / "registry.db") as connection:
+        connection.execute(
+            "CREATE TABLE prediction_sets "
+            "(prediction_hash TEXT PRIMARY KEY, training_hash TEXT, split TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE training_runs (training_hash TEXT PRIMARY KEY, label TEXT)"
+        )
+        connection.execute("INSERT INTO training_runs VALUES ('train_a', 'fwd_ret_1d')")
+        connection.executemany(
+            "INSERT INTO prediction_sets VALUES (?, ?, ?)",
+            [("hash_copied", "train_a", "validation"), ("hash_seeded", "train_a", "validation")],
+        )
+
+    copied_dir = run_log / "predictions" / "hash_copied"
+    copied_dir.mkdir(parents=True)
+    days = [date(2015, 1, 5 + offset) for offset in range(5)]
+    copied = pl.DataFrame(
+        {
+            "symbol": [s for _ in days for s in ("AAPL", "MSFT")],
+            "timestamp": [d for d in days for _ in range(2)],
+            "fold": [0] * 10,
+            "prediction": [0.01 * i for i in range(10)],
+            "actual": [0.002 * i for i in range(10)],
+        }
+    )
+    copied.write_parquet(copied_dir / "predictions.parquet")
+
+    _backfill_all_prediction_parquets(cs_dir, "us_equities_panel")
+
+    seeded = pl.read_parquet(run_log / "predictions" / "hash_seeded" / "predictions.parquet")
+    joined = seeded.join(copied, on=["timestamp", "symbol"], how="inner")
+    assert joined.height == seeded.height, "the seeded set shares no keys with the copied one"
+    gap = joined.select((pl.col("actual") - pl.col("actual_right")).abs().max()).item()
+    assert gap == 0.0, "the two sets disagree on the realized target they are scored against"
+    assert not seeded["prediction"].equals(copied["prediction"]), (
+        "the seeded set copied the scores too, so it is not an independent configuration"
+    )
+
+
+def test_seeded_predictions_stay_inside_the_split_they_are_registered_under(tmp_path, monkeypatch):
+    """A ``validation`` hash must not be handed decisions from the holdout period.
+
+    The generator once derived every artifact's date grid from ``holdout_start``,
+    so rows registered as validation carried timestamps months past the sealed
+    boundary. Notebooks that enforce that boundary then rejected the carrier -
+    a fixture defect that reads as a pipeline failure.
+    """
+    from case_studies.utils import cv_window
+
+    windows = {
+        "validation": (date(2019, 1, 7), date(2020, 12, 23)),
+        "holdout": (date(2021, 1, 1), date(2021, 12, 31)),
+    }
+    monkeypatch.setattr(
+        cv_window, "canonical_window", lambda cs, label, split: windows.get(split), raising=True
+    )
+
+    cs_dir = tmp_path / "cme_futures"
+    run_log = cs_dir / "run_log"
+    run_log.mkdir(parents=True)
+    with sqlite3.connect(run_log / "registry.db") as connection:
+        connection.execute(
+            "CREATE TABLE prediction_sets "
+            "(prediction_hash TEXT PRIMARY KEY, training_hash TEXT, split TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE training_runs (training_hash TEXT PRIMARY KEY, label TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO training_runs VALUES (?, ?)", [("train_v", "fwd_ret_5d")]
+        )
+        connection.executemany(
+            "INSERT INTO prediction_sets VALUES (?, ?, ?)",
+            [("hash_val", "train_v", "validation"), ("hash_ho", "train_v", "holdout")],
+        )
+
+    _backfill_all_prediction_parquets(cs_dir, "cme_futures")
+
+    for hash_value, split in [("hash_val", "validation"), ("hash_ho", "holdout")]:
+        frame = pl.read_parquet(run_log / "predictions" / hash_value / "predictions.parquet")
+        low, high = windows[split]
+        assert frame["timestamp"].min() >= low, f"{hash_value} starts before its {split} window"
+        assert frame["timestamp"].max() <= high, f"{hash_value} runs past its {split} window"
+
+
+def test_an_underivable_window_still_respects_the_split_boundary(tmp_path):
+    """The fallback is where the boundary is easiest to lose and hardest to notice.
+
+    A NULL label, an absent label parquet and an older registry schema all reach it
+    in ordinary seeding, so a single holdout-relative range shared by both splits
+    would reintroduce the defect silently on every one of those paths. Uses the real
+    ``canonical_window``, which cannot resolve a label that does not exist.
+    """
+    cs_dir = tmp_path / "cme_futures"
+    run_log = cs_dir / "run_log"
+    run_log.mkdir(parents=True)
+    with sqlite3.connect(run_log / "registry.db") as connection:
+        connection.execute(
+            "CREATE TABLE prediction_sets "
+            "(prediction_hash TEXT PRIMARY KEY, training_hash TEXT, split TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE training_runs (training_hash TEXT PRIMARY KEY, label TEXT)"
+        )
+        connection.execute("INSERT INTO training_runs VALUES ('train_x', NULL)")
+        connection.executemany(
+            "INSERT INTO prediction_sets VALUES (?, ?, ?)",
+            [("hash_val", "train_x", "validation"), ("hash_ho", "train_x", "holdout")],
+        )
+
+    _backfill_all_prediction_parquets(cs_dir, "cme_futures")
+
+    # case_studies/cme_futures/config/setup.yaml::evaluation.holdout_start
+    holdout_start = date(2024, 1, 1)
+    validation = pl.read_parquet(run_log / "predictions" / "hash_val" / "predictions.parquet")
+    holdout = pl.read_parquet(run_log / "predictions" / "hash_ho" / "predictions.parquet")
+
+    assert validation["timestamp"].max() < holdout_start
+    assert holdout["timestamp"].min() >= holdout_start
+
+
+# --- Cohort-leader handling -------------------------------------------------
+#
+# A label's cohort leader is the frozen carrier a strategy-analysis/portfolio/cost/
+# risk notebook resolves by hash and checks against real historical values. It is one
+# case of the general rule these tests pin: an artifact the fixture already carries is
+# the one its registry row describes, so the seeder never replaces it. These use
+# crypto_perps_funding because it was the one case study exempted from that rule, by a
+# line with no recorded rationale; a leader with no artifact at all is the remaining
+# case, and it is reported rather than silently synthesized.
+
+LEADER_PRED = "hash_leader"
+LEADER_BT = "bt_leader_signal"
+
+_COHORT_DDL = (
+    "CREATE TABLE cohort_metrics (cohort_type TEXT, label TEXT, stage TEXT, leader_hash TEXT)"
+)
+_COHORT_DDL_NO_STAGE = (
+    "CREATE TABLE cohort_metrics (cohort_type TEXT, label TEXT, leader_hash TEXT)"
+)
+
+
+def _crypto_registry(run_log, cohort_ddl):
+    """Registry with one leader prediction and one ordinary one."""
+    run_log.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(run_log / "registry.db") as connection:
+        connection.execute(
+            "CREATE TABLE prediction_sets "
+            "(prediction_hash TEXT PRIMARY KEY, training_hash TEXT, split TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE training_runs (training_hash TEXT PRIMARY KEY, label TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE backtest_runs "
+            "(backtest_hash TEXT PRIMARY KEY, prediction_hash TEXT, stage TEXT)"
+        )
+        connection.execute("INSERT INTO training_runs VALUES ('train_a', 'funding_next_8h')")
+        connection.executemany(
+            "INSERT INTO prediction_sets VALUES (?, ?, ?)",
+            [(LEADER_PRED, "train_a", "validation"), ("hash_other", "train_a", "validation")],
+        )
+        connection.execute(
+            "INSERT INTO backtest_runs VALUES (?, ?, 'signal')", (LEADER_BT, LEADER_PRED)
+        )
+        if cohort_ddl:
+            connection.execute(cohort_ddl)
+            if "stage TEXT" in cohort_ddl:
+                connection.execute(
+                    "INSERT INTO cohort_metrics VALUES ('stagelabel', 'funding_next_8h', "
+                    "'signal', ?)",
+                    (LEADER_BT,),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO cohort_metrics VALUES ('stagelabel', 'funding_next_8h', ?)",
+                    (LEADER_BT,),
+                )
+
+
+def _write_carrier(run_log, prediction_hash, marker):
+    path = run_log / "predictions" / prediction_hash
+    path.mkdir(parents=True, exist_ok=True)
+    frame = pl.DataFrame(
+        {
+            "symbol": [marker, marker],
+            "timestamp": [date(2020, 1, 1), date(2020, 1, 2)],
+            "fold": [0, 0],
+            "prediction": [0.5, 0.25],
+            "actual": [0.4, 0.2],
+        }
+    )
+    frame.write_parquet(path / "predictions.parquet")
+    return frame
+
+
+def test_no_artifact_the_fixture_already_carries_is_replaced(tmp_path):
+    """The registry row describes the artifact on disk, and it has to keep doing so.
+
+    Replacing one leaves the row reporting the coverage and IC of a prediction set that
+    is no longer there, which is a contradiction the fixture itself creates: a notebook
+    obeying C9 - validate that the artifact you read is the one the registry describes -
+    then cannot pass under CI, and `16_strategy_simulation/08_signal_method_comparison`
+    had to weaken its check because of it.
+
+    Both artifacts are checked, the cohort leader and the ordinary one, because
+    crypto_perps_funding used to exempt itself from this for everything but the leader.
+    """
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, _COHORT_DDL)
+    leader_before = _write_carrier(run_log, LEADER_PRED, "REALCARRIER")
+    other_before = _write_carrier(run_log, "hash_other", "ORDINARY")
+
+    _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+    leader_after = pl.read_parquet(run_log / "predictions" / LEADER_PRED / "predictions.parquet")
+    other_after = pl.read_parquet(run_log / "predictions" / "hash_other" / "predictions.parquet")
+    assert leader_after.equals(leader_before), "the cohort leader's real artifact was overwritten"
+    assert other_after.equals(other_before), "an ordinary shipped artifact was overwritten"
+
+
+def test_a_hash_with_no_artifact_is_still_seeded(tmp_path):
+    """The control on the test above: leaving artifacts alone is not doing nothing."""
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, _COHORT_DDL)
+    _write_carrier(run_log, LEADER_PRED, "REALCARRIER")
+
+    _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+    seeded = run_log / "predictions" / "hash_other" / "predictions.parquet"
+    assert seeded.is_file(), "the hash with no artifact of its own was not seeded"
+    assert pl.read_parquet(seeded).height
+
+
+def test_a_leader_with_no_artifact_takes_its_group_panel(tmp_path):
+    """A leader with no artifact is seeded onto a real panel where its group has one.
+
+    That panel carries the entities, timestamps and realized target the pinning notebook
+    checks, so there is nothing to report.
+    """
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, _COHORT_DDL)
+    _write_carrier(run_log, "hash_other", "REALPANEL")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+    assert not [w for w in caught if "cohort-leader" in str(w.message)]
+    leader = pl.read_parquet(run_log / "predictions" / LEADER_PRED / "predictions.parquet")
+    assert leader["symbol"].unique().to_list() == ["REALPANEL"]
+
+
+def test_a_leader_with_no_artifact_takes_the_fixture_label_panel(tmp_path):
+    """With nothing in the group, the fixture's own label artifact is the panel.
+
+    `sample_registry_for_tests` copies no prediction artifacts, so this is the ordinary
+    case in seven of the nine fixtures: the group is empty and the label parquet is the
+    only real source of keys and of the realized value the pinning notebook checks.
+    """
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, _COHORT_DDL)
+    labels_dir = cs_dir / "labels"
+    labels_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["BTC", "ETH"] * 30,
+            # Inside the default validation window (holdout_start 2024-01-01).
+            "timestamp": [date(2022, 3, 1) + timedelta(days=i) for i in range(30) for _ in (0, 1)],
+            "funding_next_8h": [i / 1000 for i in range(60)],
+        }
+    ).write_parquet(labels_dir / "funding_next_8h.parquet")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+    assert not [w for w in caught if "cohort-leader" in str(w.message)]
+    leader = pl.read_parquet(run_log / "predictions" / LEADER_PRED / "predictions.parquet")
+    assert sorted(leader["symbol"].unique().to_list()) == ["BTC", "ETH"]
+    # The realized value is the label's own, not a drawn one.
+    truth = pl.read_parquet(labels_dir / "funding_next_8h.parquet")
+    joined = leader.join(
+        truth.rename({"funding_next_8h": "truth"}), on=["symbol", "timestamp"], how="inner"
+    )
+    assert joined.height == leader.height
+    assert (joined["actual"] - joined["truth"]).abs().max() == 0.0
+
+
+def test_a_leader_with_no_panel_at_all_is_named(tmp_path):
+    """Nothing left to seed onto: no group artifact, no label parquet. Report it by hash.
+
+    The gap surfaces here at regeneration time rather than as a correlation failure
+    several notebooks downstream.
+    """
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, _COHORT_DDL)
+
+    with pytest.warns(RuntimeWarning, match=LEADER_PRED):
+        _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+
+def test_a_cohort_metrics_table_missing_stage_is_not_swallowed(tmp_path):
+    """An emptied leader set is the dangerous outcome, not a missing one: every real
+    carrier artifact then goes back through the synthetic rewrite, reported as success.
+    """
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, _COHORT_DDL_NO_STAGE)
+    _write_carrier(run_log, LEADER_PRED, "REALCARRIER")
+
+    with pytest.raises(sqlite3.OperationalError, match="stage"):
+        _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+
+def test_a_registry_without_cohort_metrics_still_seeds(tmp_path):
+    """The one condition the existence guard tolerates."""
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, None)
+
+    _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+    for prediction_hash in (LEADER_PRED, "hash_other"):
+        assert (run_log / "predictions" / prediction_hash / "predictions.parquet").is_file()
+
+
+def test_a_sub_daily_label_keeps_the_fabricated_grid(tmp_path):
+    """`_subsampled_panel` keeps a contiguous run at native spacing below a day.
+
+    It has to: a stride hands an 8H label decisions ten days apart and 13_backtest rejects
+    them against its horizon. On a minute-bar label that run is sixty consecutive minutes.
+    Measured on nasdaq100_microstructure, every seeded set collapsed to one hour of a
+    one-year window, every configuration in the sweep scored the same Sharpe, and
+    14_backtest failed at `hist(..., bins=30)` with "Too many bins for data range". The
+    fabricated grid spans the window, which is what an intraday case study is better
+    served by, so the label panel declines below a day.
+    """
+    cs_dir = tmp_path / "crypto_perps_funding"
+    run_log = cs_dir / "run_log"
+    _crypto_registry(run_log, _COHORT_DDL)
+    labels_dir = cs_dir / "labels"
+    labels_dir.mkdir(parents=True)
+    minutes = [datetime(2022, 3, 1) + timedelta(minutes=i) for i in range(600)]
+    pl.DataFrame(
+        {
+            "symbol": ["BTC", "ETH"] * 600,
+            "timestamp": [m for m in minutes for _ in (0, 1)],
+            "funding_next_8h": [i / 1000 for i in range(1200)],
+        }
+    ).write_parquet(labels_dir / "funding_next_8h.parquet")
+
+    with pytest.warns(RuntimeWarning, match=LEADER_PRED):
+        _backfill_all_prediction_parquets(cs_dir, "crypto_perps_funding")
+
+    leader = pl.read_parquet(run_log / "predictions" / LEADER_PRED / "predictions.parquet")
+    # The fabricated weekday grid, not the label's ten hours: the warning above already
+    # says the label panel declined, and the spacing is what the notebook depends on.
+    stamps = leader["timestamp"].unique().sort()
+    assert stamps.len() > 1
+    assert stamps.diff().drop_nulls().min() >= timedelta(days=1)
+    assert stamps.max() - stamps.min() > timedelta(days=30)

@@ -1,0 +1,1607 @@
+{
+  "generated_at_utc": "2026-10-01T15:18:20.802027+00:00",
+  "criteria": "Top active perpetual contracts, onboardDate <= 2024-10-01 (>2 years established)",
+  "total_qualified_symbols": 221,
+  "top_symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "base_asset": "BTC",
+      "onboard_date": "2019-09-08",
+      "age_years": 7.06,
+      "volume_24h_usd": 10617427575.29,
+      "volume_24h_m": 10617.43
+    },
+    {
+      "symbol": "ETHUSDT",
+      "base_asset": "ETH",
+      "onboard_date": "2019-11-27",
+      "age_years": 6.84,
+      "volume_24h_usd": 7918088933.09,
+      "volume_24h_m": 7918.09
+    },
+    {
+      "symbol": "SOLUSDT",
+      "base_asset": "SOL",
+      "onboard_date": "2020-09-14",
+      "age_years": 6.04,
+      "volume_24h_usd": 1915478609.4786,
+      "volume_24h_m": 1915.48
+    },
+    {
+      "symbol": "ZECUSDT",
+      "base_asset": "ZEC",
+      "onboard_date": "2020-02-05",
+      "age_years": 6.65,
+      "volume_24h_usd": 1913583412.03,
+      "volume_24h_m": 1913.58
+    },
+    {
+      "symbol": "MOVRUSDT",
+      "base_asset": "MOVR",
+      "onboard_date": "2023-12-26",
+      "age_years": 2.76,
+      "volume_24h_usd": 1382472216.047472,
+      "volume_24h_m": 1382.47
+    },
+    {
+      "symbol": "NEARUSDT",
+      "base_asset": "NEAR",
+      "onboard_date": "2020-10-15",
+      "age_years": 5.96,
+      "volume_24h_usd": 1127420200.207,
+      "volume_24h_m": 1127.42
+    },
+    {
+      "symbol": "QNTUSDT",
+      "base_asset": "QNT",
+      "onboard_date": "2022-10-18",
+      "age_years": 3.95,
+      "volume_24h_usd": 931023342.679,
+      "volume_24h_m": 931.02
+    },
+    {
+      "symbol": "XRPUSDT",
+      "base_asset": "XRP",
+      "onboard_date": "2020-01-06",
+      "age_years": 6.73,
+      "volume_24h_usd": 864083318.2574,
+      "volume_24h_m": 864.08
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "base_asset": "DOGE",
+      "onboard_date": "2020-07-10",
+      "age_years": 6.22,
+      "volume_24h_usd": 420983333.98749,
+      "volume_24h_m": 420.98
+    },
+    {
+      "symbol": "SUIUSDT",
+      "base_asset": "SUI",
+      "onboard_date": "2023-05-03",
+      "age_years": 3.41,
+      "volume_24h_usd": 394112022.83068,
+      "volume_24h_m": 394.11
+    },
+    {
+      "symbol": "ENAUSDT",
+      "base_asset": "ENA",
+      "onboard_date": "2024-04-02",
+      "age_years": 2.5,
+      "volume_24h_usd": 379707541.39903,
+      "volume_24h_m": 379.71
+    },
+    {
+      "symbol": "UNIUSDT",
+      "base_asset": "UNI",
+      "onboard_date": "2020-09-18",
+      "age_years": 6.03,
+      "volume_24h_usd": 350785572.144,
+      "volume_24h_m": 350.79
+    },
+    {
+      "symbol": "WLDUSDT",
+      "base_asset": "WLD",
+      "onboard_date": "2023-07-24",
+      "age_years": 3.19,
+      "volume_24h_usd": 329089566.1994,
+      "volume_24h_m": 329.09
+    },
+    {
+      "symbol": "1000PEPEUSDT",
+      "base_asset": "1000PEPE",
+      "onboard_date": "2023-05-05",
+      "age_years": 3.41,
+      "volume_24h_usd": 237116518.2358246,
+      "volume_24h_m": 237.12
+    },
+    {
+      "symbol": "BNBUSDT",
+      "base_asset": "BNB",
+      "onboard_date": "2020-02-10",
+      "age_years": 6.64,
+      "volume_24h_usd": 230042620.314,
+      "volume_24h_m": 230.04
+    },
+    {
+      "symbol": "AAVEUSDT",
+      "base_asset": "AAVE",
+      "onboard_date": "2020-10-16",
+      "age_years": 5.96,
+      "volume_24h_usd": 200680165.602,
+      "volume_24h_m": 200.68
+    },
+    {
+      "symbol": "ADAUSDT",
+      "base_asset": "ADA",
+      "onboard_date": "2020-01-31",
+      "age_years": 6.67,
+      "volume_24h_usd": 199492464.2995,
+      "volume_24h_m": 199.49
+    },
+    {
+      "symbol": "LINKUSDT",
+      "base_asset": "LINK",
+      "onboard_date": "2020-01-17",
+      "age_years": 6.7,
+      "volume_24h_usd": 194396152.639,
+      "volume_24h_m": 194.4
+    },
+    {
+      "symbol": "ONDOUSDT",
+      "base_asset": "ONDO",
+      "onboard_date": "2024-01-20",
+      "age_years": 2.7,
+      "volume_24h_usd": 179177846.30331,
+      "volume_24h_m": 179.18
+    },
+    {
+      "symbol": "ARKUSDT",
+      "base_asset": "ARK",
+      "onboard_date": "2023-09-19",
+      "age_years": 3.03,
+      "volume_24h_usd": 170715868.1057,
+      "volume_24h_m": 170.72
+    },
+    {
+      "symbol": "AVAXUSDT",
+      "base_asset": "AVAX",
+      "onboard_date": "2020-09-23",
+      "age_years": 6.02,
+      "volume_24h_usd": 168925846.859,
+      "volume_24h_m": 168.93
+    },
+    {
+      "symbol": "TAOUSDT",
+      "base_asset": "TAO",
+      "onboard_date": "2024-04-11",
+      "age_years": 2.47,
+      "volume_24h_usd": 165523017.95,
+      "volume_24h_m": 165.52
+    },
+    {
+      "symbol": "HBARUSDT",
+      "base_asset": "HBAR",
+      "onboard_date": "2021-03-17",
+      "age_years": 5.54,
+      "volume_24h_usd": 120893868.66954,
+      "volume_24h_m": 120.89
+    },
+    {
+      "symbol": "FILUSDT",
+      "base_asset": "FIL",
+      "onboard_date": "2020-10-16",
+      "age_years": 5.96,
+      "volume_24h_usd": 104496673.49787,
+      "volume_24h_m": 104.5
+    },
+    {
+      "symbol": "STXUSDT",
+      "base_asset": "STX",
+      "onboard_date": "2023-02-20",
+      "age_years": 3.61,
+      "volume_24h_usd": 103038766.4709,
+      "volume_24h_m": 103.04
+    },
+    {
+      "symbol": "XLMUSDT",
+      "base_asset": "XLM",
+      "onboard_date": "2020-01-20",
+      "age_years": 6.7,
+      "volume_24h_usd": 100322679.27629,
+      "volume_24h_m": 100.32
+    },
+    {
+      "symbol": "ARBUSDT",
+      "base_asset": "ARB",
+      "onboard_date": "2023-03-23",
+      "age_years": 3.53,
+      "volume_24h_usd": 99557219.89321,
+      "volume_24h_m": 99.56
+    },
+    {
+      "symbol": "LTCUSDT",
+      "base_asset": "LTC",
+      "onboard_date": "2020-01-09",
+      "age_years": 6.73,
+      "volume_24h_usd": 90179618.15,
+      "volume_24h_m": 90.18
+    },
+    {
+      "symbol": "FETUSDT",
+      "base_asset": "FET",
+      "onboard_date": "2023-01-15",
+      "age_years": 3.71,
+      "volume_24h_usd": 81700636.4564,
+      "volume_24h_m": 81.7
+    },
+    {
+      "symbol": "BCHUSDT",
+      "base_asset": "BCH",
+      "onboard_date": "2019-12-19",
+      "age_years": 6.78,
+      "volume_24h_usd": 74914479.67,
+      "volume_24h_m": 74.91
+    },
+    {
+      "symbol": "DOTUSDT",
+      "base_asset": "DOT",
+      "onboard_date": "2020-08-22",
+      "age_years": 6.11,
+      "volume_24h_usd": 62325083.72105,
+      "volume_24h_m": 62.33
+    },
+    {
+      "symbol": "ZROUSDT",
+      "base_asset": "ZRO",
+      "onboard_date": "2024-06-20",
+      "age_years": 2.28,
+      "volume_24h_usd": 58371770.31581,
+      "volume_24h_m": 58.37
+    },
+    {
+      "symbol": "TRXUSDT",
+      "base_asset": "TRX",
+      "onboard_date": "2020-01-15",
+      "age_years": 6.71,
+      "volume_24h_usd": 56242618.55391,
+      "volume_24h_m": 56.24
+    },
+    {
+      "symbol": "APTUSDT",
+      "base_asset": "APT",
+      "onboard_date": "2022-10-18",
+      "age_years": 3.95,
+      "volume_24h_usd": 53193196.52287,
+      "volume_24h_m": 53.19
+    },
+    {
+      "symbol": "INJUSDT",
+      "base_asset": "INJ",
+      "onboard_date": "2022-08-16",
+      "age_years": 4.13,
+      "volume_24h_usd": 48084051.2463,
+      "volume_24h_m": 48.08
+    },
+    {
+      "symbol": "DASHUSDT",
+      "base_asset": "DASH",
+      "onboard_date": "2020-02-04",
+      "age_years": 6.65,
+      "volume_24h_usd": 45402076.53,
+      "volume_24h_m": 45.4
+    },
+    {
+      "symbol": "ETHFIUSDT",
+      "base_asset": "ETHFI",
+      "onboard_date": "2024-03-18",
+      "age_years": 2.54,
+      "volume_24h_usd": 43011647.03541,
+      "volume_24h_m": 43.01
+    },
+    {
+      "symbol": "ICPUSDT",
+      "base_asset": "ICP",
+      "onboard_date": "2021-07-30",
+      "age_years": 5.17,
+      "volume_24h_usd": 41327459.489,
+      "volume_24h_m": 41.33
+    },
+    {
+      "symbol": "CRVUSDT",
+      "base_asset": "CRV",
+      "onboard_date": "2020-09-01",
+      "age_years": 6.08,
+      "volume_24h_usd": 37558118.84699,
+      "volume_24h_m": 37.56
+    },
+    {
+      "symbol": "JASMYUSDT",
+      "base_asset": "JASMY",
+      "onboard_date": "2022-04-19",
+      "age_years": 4.45,
+      "volume_24h_usd": 37285799.040025,
+      "volume_24h_m": 37.29
+    },
+    {
+      "symbol": "1000SHIBUSDT",
+      "base_asset": "1000SHIB",
+      "onboard_date": "2021-05-10",
+      "age_years": 5.39,
+      "volume_24h_usd": 34972981.85242,
+      "volume_24h_m": 34.97
+    },
+    {
+      "symbol": "LDOUSDT",
+      "base_asset": "LDO",
+      "onboard_date": "2022-09-21",
+      "age_years": 4.03,
+      "volume_24h_usd": 34941548.6954,
+      "volume_24h_m": 34.94
+    },
+    {
+      "symbol": "TIAUSDT",
+      "base_asset": "TIA",
+      "onboard_date": "2023-10-31",
+      "age_years": 2.92,
+      "volume_24h_usd": 34577652.455,
+      "volume_24h_m": 34.58
+    },
+    {
+      "symbol": "OPUSDT",
+      "base_asset": "OP",
+      "onboard_date": "2022-06-01",
+      "age_years": 4.33,
+      "volume_24h_usd": 33558695.829384,
+      "volume_24h_m": 33.56
+    },
+    {
+      "symbol": "1000BONKUSDT",
+      "base_asset": "1000BONK",
+      "onboard_date": "2023-11-22",
+      "age_years": 2.86,
+      "volume_24h_usd": 33246669.054159,
+      "volume_24h_m": 33.25
+    },
+    {
+      "symbol": "ETCUSDT",
+      "base_asset": "ETC",
+      "onboard_date": "2020-01-16",
+      "age_years": 6.71,
+      "volume_24h_usd": 33004903.666,
+      "volume_24h_m": 33.0
+    },
+    {
+      "symbol": "ALICEUSDT",
+      "base_asset": "ALICE",
+      "onboard_date": "2021-03-15",
+      "age_years": 5.55,
+      "volume_24h_usd": 30077648.48815,
+      "volume_24h_m": 30.08
+    },
+    {
+      "symbol": "XMRUSDT",
+      "base_asset": "XMR",
+      "onboard_date": "2020-02-03",
+      "age_years": 6.66,
+      "volume_24h_usd": 28200075.58,
+      "volume_24h_m": 28.2
+    },
+    {
+      "symbol": "SEIUSDT",
+      "base_asset": "SEI",
+      "onboard_date": "2023-08-17",
+      "age_years": 3.12,
+      "volume_24h_usd": 28117290.27902,
+      "volume_24h_m": 28.12
+    },
+    {
+      "symbol": "LSKUSDT",
+      "base_asset": "LSK",
+      "onboard_date": "2024-01-25",
+      "age_years": 2.68,
+      "volume_24h_usd": 28034312.32179,
+      "volume_24h_m": 28.03
+    },
+    {
+      "symbol": "ARUSDT",
+      "base_asset": "AR",
+      "onboard_date": "2021-09-28",
+      "age_years": 5.01,
+      "volume_24h_usd": 27984102.339,
+      "volume_24h_m": 27.98
+    },
+    {
+      "symbol": "SYNUSDT",
+      "base_asset": "SYN",
+      "onboard_date": "2024-08-16",
+      "age_years": 2.12,
+      "volume_24h_usd": 25961167.88878,
+      "volume_24h_m": 25.96
+    },
+    {
+      "symbol": "ALGOUSDT",
+      "base_asset": "ALGO",
+      "onboard_date": "2020-06-16",
+      "age_years": 6.29,
+      "volume_24h_usd": 25940166.25725,
+      "volume_24h_m": 25.94
+    },
+    {
+      "symbol": "WIFUSDT",
+      "base_asset": "WIF",
+      "onboard_date": "2024-01-18",
+      "age_years": 2.7,
+      "volume_24h_usd": 24052099.98316,
+      "volume_24h_m": 24.05
+    },
+    {
+      "symbol": "PENDLEUSDT",
+      "base_asset": "PENDLE",
+      "onboard_date": "2023-07-28",
+      "age_years": 3.18,
+      "volume_24h_usd": 23327145.5714,
+      "volume_24h_m": 23.33
+    },
+    {
+      "symbol": "POLUSDT",
+      "base_asset": "POL",
+      "onboard_date": "2024-09-13",
+      "age_years": 2.05,
+      "volume_24h_usd": 22632380.73169,
+      "volume_24h_m": 22.63
+    },
+    {
+      "symbol": "ONEUSDT",
+      "base_asset": "ONE",
+      "onboard_date": "2021-03-17",
+      "age_years": 5.54,
+      "volume_24h_usd": 22581281.5171008,
+      "volume_24h_m": 22.58
+    },
+    {
+      "symbol": "JUPUSDT",
+      "base_asset": "JUP",
+      "onboard_date": "2024-01-31",
+      "age_years": 2.66,
+      "volume_24h_usd": 22287448.1926,
+      "volume_24h_m": 22.29
+    },
+    {
+      "symbol": "JTOUSDT",
+      "base_asset": "JTO",
+      "onboard_date": "2023-12-08",
+      "age_years": 2.81,
+      "volume_24h_usd": 21507791.3341,
+      "volume_24h_m": 21.51
+    },
+    {
+      "symbol": "TRBUSDT",
+      "base_asset": "TRB",
+      "onboard_date": "2020-09-03",
+      "age_years": 6.07,
+      "volume_24h_usd": 20430678.706,
+      "volume_24h_m": 20.43
+    },
+    {
+      "symbol": "ATOMUSDT",
+      "base_asset": "ATOM",
+      "onboard_date": "2020-02-07",
+      "age_years": 6.65,
+      "volume_24h_usd": 20076841.402,
+      "volume_24h_m": 20.08
+    },
+    {
+      "symbol": "NMRUSDT",
+      "base_asset": "NMR",
+      "onboard_date": "2023-06-22",
+      "age_years": 3.28,
+      "volume_24h_usd": 19062687.5752,
+      "volume_24h_m": 19.06
+    },
+    {
+      "symbol": "RENDERUSDT",
+      "base_asset": "RENDER",
+      "onboard_date": "2024-07-26",
+      "age_years": 2.18,
+      "volume_24h_usd": 18169726.3752,
+      "volume_24h_m": 18.17
+    },
+    {
+      "symbol": "STRKUSDT",
+      "base_asset": "STRK",
+      "onboard_date": "2024-02-20",
+      "age_years": 2.61,
+      "volume_24h_usd": 17873267.876717,
+      "volume_24h_m": 17.87
+    },
+    {
+      "symbol": "ZENUSDT",
+      "base_asset": "ZEN",
+      "onboard_date": "2020-11-24",
+      "age_years": 5.85,
+      "volume_24h_usd": 17061207.707,
+      "volume_24h_m": 17.06
+    },
+    {
+      "symbol": "RUNEUSDT",
+      "base_asset": "RUNE",
+      "onboard_date": "2020-09-04",
+      "age_years": 6.07,
+      "volume_24h_usd": 16735205.1499,
+      "volume_24h_m": 16.74
+    },
+    {
+      "symbol": "REZUSDT",
+      "base_asset": "REZ",
+      "onboard_date": "2024-04-30",
+      "age_years": 2.42,
+      "volume_24h_usd": 15973360.973323,
+      "volume_24h_m": 15.97
+    },
+    {
+      "symbol": "SAGAUSDT",
+      "base_asset": "SAGA",
+      "onboard_date": "2024-04-09",
+      "age_years": 2.48,
+      "volume_24h_usd": 15661151.994855,
+      "volume_24h_m": 15.66
+    },
+    {
+      "symbol": "COTIUSDT",
+      "base_asset": "COTI",
+      "onboard_date": "2021-03-09",
+      "age_years": 5.56,
+      "volume_24h_usd": 14895530.798381,
+      "volume_24h_m": 14.9
+    },
+    {
+      "symbol": "ACEUSDT",
+      "base_asset": "ACE",
+      "onboard_date": "2023-12-18",
+      "age_years": 2.79,
+      "volume_24h_usd": 14685233.022019,
+      "volume_24h_m": 14.69
+    },
+    {
+      "symbol": "GALAUSDT",
+      "base_asset": "GALA",
+      "onboard_date": "2021-09-17",
+      "age_years": 5.04,
+      "volume_24h_usd": 13879077.220302,
+      "volume_24h_m": 13.88
+    },
+    {
+      "symbol": "GTCUSDT",
+      "base_asset": "GTC",
+      "onboard_date": "2021-03-15",
+      "age_years": 5.55,
+      "volume_24h_usd": 12858024.803735,
+      "volume_24h_m": 12.86
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "base_asset": "SUSHI",
+      "onboard_date": "2020-09-04",
+      "age_years": 6.07,
+      "volume_24h_usd": 12797034.0037,
+      "volume_24h_m": 12.8
+    },
+    {
+      "symbol": "DUSKUSDT",
+      "base_asset": "DUSK",
+      "onboard_date": "2022-01-06",
+      "age_years": 4.73,
+      "volume_24h_usd": 12517427.94565,
+      "volume_24h_m": 12.52
+    },
+    {
+      "symbol": "ZETAUSDT",
+      "base_asset": "ZETA",
+      "onboard_date": "2024-02-02",
+      "age_years": 2.66,
+      "volume_24h_usd": 12147091.17284,
+      "volume_24h_m": 12.15
+    },
+    {
+      "symbol": "DYDXUSDT",
+      "base_asset": "DYDX",
+      "onboard_date": "2021-09-09",
+      "age_years": 5.06,
+      "volume_24h_usd": 11745696.085,
+      "volume_24h_m": 11.75
+    },
+    {
+      "symbol": "PYTHUSDT",
+      "base_asset": "PYTH",
+      "onboard_date": "2023-11-22",
+      "age_years": 2.86,
+      "volume_24h_usd": 11633486.11929,
+      "volume_24h_m": 11.63
+    },
+    {
+      "symbol": "BLURUSDT",
+      "base_asset": "BLUR",
+      "onboard_date": "2023-04-27",
+      "age_years": 3.43,
+      "volume_24h_usd": 10622804.22662,
+      "volume_24h_m": 10.62
+    },
+    {
+      "symbol": "ONGUSDT",
+      "base_asset": "ONG",
+      "onboard_date": "2023-11-27",
+      "age_years": 2.84,
+      "volume_24h_usd": 10085240.71709,
+      "volume_24h_m": 10.09
+    },
+    {
+      "symbol": "SANDUSDT",
+      "base_asset": "SAND",
+      "onboard_date": "2021-01-18",
+      "age_years": 5.7,
+      "volume_24h_usd": 9697662.79098,
+      "volume_24h_m": 9.7
+    },
+    {
+      "symbol": "MEWUSDT",
+      "base_asset": "MEW",
+      "onboard_date": "2024-06-17",
+      "age_years": 2.29,
+      "volume_24h_usd": 9538141.6490082,
+      "volume_24h_m": 9.54
+    },
+    {
+      "symbol": "ORDIUSDT",
+      "base_asset": "ORDI",
+      "onboard_date": "2023-11-07",
+      "age_years": 2.9,
+      "volume_24h_usd": 9496514.7685,
+      "volume_24h_m": 9.5
+    },
+    {
+      "symbol": "CAKEUSDT",
+      "base_asset": "CAKE",
+      "onboard_date": "2023-11-02",
+      "age_years": 2.91,
+      "volume_24h_usd": 9451835.967,
+      "volume_24h_m": 9.45
+    },
+    {
+      "symbol": "CELOUSDT",
+      "base_asset": "CELO",
+      "onboard_date": "2021-09-26",
+      "age_years": 5.01,
+      "volume_24h_usd": 8859407.868329,
+      "volume_24h_m": 8.86
+    },
+    {
+      "symbol": "BOMEUSDT",
+      "base_asset": "BOME",
+      "onboard_date": "2024-03-16",
+      "age_years": 2.54,
+      "volume_24h_usd": 8845411.5938246,
+      "volume_24h_m": 8.85
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "base_asset": "IOTA",
+      "onboard_date": "2020-02-12",
+      "age_years": 6.63,
+      "volume_24h_usd": 8571109.021357,
+      "volume_24h_m": 8.57
+    },
+    {
+      "symbol": "GRTUSDT",
+      "base_asset": "GRT",
+      "onboard_date": "2020-12-18",
+      "age_years": 5.78,
+      "volume_24h_usd": 8560249.63009,
+      "volume_24h_m": 8.56
+    },
+    {
+      "symbol": "RAREUSDT",
+      "base_asset": "RARE",
+      "onboard_date": "2024-08-15",
+      "age_years": 2.13,
+      "volume_24h_usd": 7778260.99598,
+      "volume_24h_m": 7.78
+    },
+    {
+      "symbol": "KSMUSDT",
+      "base_asset": "KSM",
+      "onboard_date": "2020-10-14",
+      "age_years": 5.96,
+      "volume_24h_usd": 7665709.804,
+      "volume_24h_m": 7.67
+    },
+    {
+      "symbol": "GUSDT",
+      "base_asset": "G",
+      "onboard_date": "2024-08-15",
+      "age_years": 2.13,
+      "volume_24h_usd": 7267665.912577,
+      "volume_24h_m": 7.27
+    },
+    {
+      "symbol": "AXSUSDT",
+      "base_asset": "AXS",
+      "onboard_date": "2020-11-20",
+      "age_years": 5.86,
+      "volume_24h_usd": 7224671.7208,
+      "volume_24h_m": 7.22
+    },
+    {
+      "symbol": "MINAUSDT",
+      "base_asset": "MINA",
+      "onboard_date": "2023-02-03",
+      "age_years": 3.66,
+      "volume_24h_usd": 7202068.47023,
+      "volume_24h_m": 7.2
+    },
+    {
+      "symbol": "CHZUSDT",
+      "base_asset": "CHZ",
+      "onboard_date": "2021-01-21",
+      "age_years": 5.69,
+      "volume_24h_usd": 6912946.33367,
+      "volume_24h_m": 6.91
+    },
+    {
+      "symbol": "WUSDT",
+      "base_asset": "W",
+      "onboard_date": "2024-04-03",
+      "age_years": 2.49,
+      "volume_24h_usd": 6740040.8808851,
+      "volume_24h_m": 6.74
+    },
+    {
+      "symbol": "EGLDUSDT",
+      "base_asset": "EGLD",
+      "onboard_date": "2020-09-14",
+      "age_years": 6.04,
+      "volume_24h_usd": 6620732.818,
+      "volume_24h_m": 6.62
+    },
+    {
+      "symbol": "NEIROUSDT",
+      "base_asset": "NEIRO",
+      "onboard_date": "2024-09-16",
+      "age_years": 2.04,
+      "volume_24h_usd": 6564209.92804463,
+      "volume_24h_m": 6.56
+    },
+    {
+      "symbol": "CYBERUSDT",
+      "base_asset": "CYBER",
+      "onboard_date": "2023-08-21",
+      "age_years": 3.11,
+      "volume_24h_usd": 6498300.42869,
+      "volume_24h_m": 6.5
+    },
+    {
+      "symbol": "ENSUSDT",
+      "base_asset": "ENS",
+      "onboard_date": "2021-11-29",
+      "age_years": 4.84,
+      "volume_24h_usd": 6347916.661,
+      "volume_24h_m": 6.35
+    },
+    {
+      "symbol": "COMPUSDT",
+      "base_asset": "COMP",
+      "onboard_date": "2020-06-30",
+      "age_years": 6.25,
+      "volume_24h_usd": 6291578.95,
+      "volume_24h_m": 6.29
+    },
+    {
+      "symbol": "VETUSDT",
+      "base_asset": "VET",
+      "onboard_date": "2020-02-14",
+      "age_years": 6.63,
+      "volume_24h_usd": 6269482.831004,
+      "volume_24h_m": 6.27
+    },
+    {
+      "symbol": "1000FLOKIUSDT",
+      "base_asset": "1000FLOKI",
+      "onboard_date": "2023-05-06",
+      "age_years": 3.41,
+      "volume_24h_usd": 6262805.63294,
+      "volume_24h_m": 6.26
+    },
+    {
+      "symbol": "APEUSDT",
+      "base_asset": "APE",
+      "onboard_date": "2022-03-17",
+      "age_years": 4.54,
+      "volume_24h_usd": 6193936.5197,
+      "volume_24h_m": 6.19
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "base_asset": "PEOPLE",
+      "onboard_date": "2021-12-23",
+      "age_years": 4.77,
+      "volume_24h_usd": 5967451.64544,
+      "volume_24h_m": 5.97
+    },
+    {
+      "symbol": "KASUSDT",
+      "base_asset": "KAS",
+      "onboard_date": "2023-11-17",
+      "age_years": 2.87,
+      "volume_24h_usd": 5804503.49565,
+      "volume_24h_m": 5.8
+    },
+    {
+      "symbol": "IOSTUSDT",
+      "base_asset": "IOST",
+      "onboard_date": "2020-02-21",
+      "age_years": 6.61,
+      "volume_24h_usd": 5579116.6187972,
+      "volume_24h_m": 5.58
+    },
+    {
+      "symbol": "USDCUSDT",
+      "base_asset": "USDC",
+      "onboard_date": "2023-03-12",
+      "age_years": 3.56,
+      "volume_24h_usd": 4850674.060374,
+      "volume_24h_m": 4.85
+    },
+    {
+      "symbol": "BBUSDT",
+      "base_asset": "BB",
+      "onboard_date": "2024-05-13",
+      "age_years": 2.38,
+      "volume_24h_usd": 4232672.99272,
+      "volume_24h_m": 4.23
+    },
+    {
+      "symbol": "ENJUSDT",
+      "base_asset": "ENJ",
+      "onboard_date": "2020-09-29",
+      "age_years": 6.0,
+      "volume_24h_usd": 4228562.55654,
+      "volume_24h_m": 4.23
+    },
+    {
+      "symbol": "SNXUSDT",
+      "base_asset": "SNX",
+      "onboard_date": "2020-08-14",
+      "age_years": 6.13,
+      "volume_24h_usd": 4160651.79001,
+      "volume_24h_m": 4.16
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "base_asset": "FLOW",
+      "onboard_date": "2022-02-09",
+      "age_years": 4.64,
+      "volume_24h_usd": 4045888.06759,
+      "volume_24h_m": 4.05
+    },
+    {
+      "symbol": "ZKUSDT",
+      "base_asset": "ZK",
+      "onboard_date": "2024-06-17",
+      "age_years": 2.29,
+      "volume_24h_usd": 4031749.376918,
+      "volume_24h_m": 4.03
+    },
+    {
+      "symbol": "PORTALUSDT",
+      "base_asset": "PORTAL",
+      "onboard_date": "2024-02-29",
+      "age_years": 2.59,
+      "volume_24h_usd": 3992718.854594,
+      "volume_24h_m": 3.99
+    },
+    {
+      "symbol": "TNSRUSDT",
+      "base_asset": "TNSR",
+      "onboard_date": "2024-04-08",
+      "age_years": 2.48,
+      "volume_24h_usd": 3856729.467356,
+      "volume_24h_m": 3.86
+    },
+    {
+      "symbol": "MAGICUSDT",
+      "base_asset": "MAGIC",
+      "onboard_date": "2023-01-23",
+      "age_years": 3.69,
+      "volume_24h_usd": 3831094.619755,
+      "volume_24h_m": 3.83
+    },
+    {
+      "symbol": "1000LUNCUSDT",
+      "base_asset": "1000LUNC",
+      "onboard_date": "2022-09-08",
+      "age_years": 4.06,
+      "volume_24h_usd": 3789882.86636,
+      "volume_24h_m": 3.79
+    },
+    {
+      "symbol": "SUPERUSDT",
+      "base_asset": "SUPER",
+      "onboard_date": "2023-11-26",
+      "age_years": 2.85,
+      "volume_24h_usd": 3739916.20056,
+      "volume_24h_m": 3.74
+    },
+    {
+      "symbol": "THETAUSDT",
+      "base_asset": "THETA",
+      "onboard_date": "2020-05-27",
+      "age_years": 6.35,
+      "volume_24h_usd": 3689968.2782,
+      "volume_24h_m": 3.69
+    },
+    {
+      "symbol": "TLMUSDT",
+      "base_asset": "TLM",
+      "onboard_date": "2023-03-29",
+      "age_years": 3.51,
+      "volume_24h_usd": 3606717.996702,
+      "volume_24h_m": 3.61
+    },
+    {
+      "symbol": "TWTUSDT",
+      "base_asset": "TWT",
+      "onboard_date": "2023-11-03",
+      "age_years": 2.91,
+      "volume_24h_usd": 3600419.6488,
+      "volume_24h_m": 3.6
+    },
+    {
+      "symbol": "CFXUSDT",
+      "base_asset": "CFX",
+      "onboard_date": "2023-02-19",
+      "age_years": 3.61,
+      "volume_24h_usd": 3599372.43891,
+      "volume_24h_m": 3.6
+    },
+    {
+      "symbol": "XTZUSDT",
+      "base_asset": "XTZ",
+      "onboard_date": "2020-02-06",
+      "age_years": 6.65,
+      "volume_24h_usd": 3336830.24199,
+      "volume_24h_m": 3.34
+    },
+    {
+      "symbol": "IOUSDT",
+      "base_asset": "IO",
+      "onboard_date": "2024-06-11",
+      "age_years": 2.3,
+      "volume_24h_usd": 3326348.00467,
+      "volume_24h_m": 3.33
+    },
+    {
+      "symbol": "MANAUSDT",
+      "base_asset": "MANA",
+      "onboard_date": "2021-03-14",
+      "age_years": 5.55,
+      "volume_24h_usd": 3187812.48311,
+      "volume_24h_m": 3.19
+    },
+    {
+      "symbol": "TURBOUSDT",
+      "base_asset": "TURBO",
+      "onboard_date": "2024-05-30",
+      "age_years": 2.34,
+      "volume_24h_usd": 3157114.0086741,
+      "volume_24h_m": 3.16
+    },
+    {
+      "symbol": "TUSDT",
+      "base_asset": "T",
+      "onboard_date": "2023-01-31",
+      "age_years": 3.67,
+      "volume_24h_usd": 3124097.360672,
+      "volume_24h_m": 3.12
+    },
+    {
+      "symbol": "RVNUSDT",
+      "base_asset": "RVN",
+      "onboard_date": "2021-02-23",
+      "age_years": 5.6,
+      "volume_24h_usd": 3111656.700267,
+      "volume_24h_m": 3.11
+    },
+    {
+      "symbol": "LPTUSDT",
+      "base_asset": "LPT",
+      "onboard_date": "2021-11-10",
+      "age_years": 4.89,
+      "volume_24h_usd": 3068154.168,
+      "volume_24h_m": 3.07
+    },
+    {
+      "symbol": "XAIUSDT",
+      "base_asset": "XAI",
+      "onboard_date": "2024-01-09",
+      "age_years": 2.73,
+      "volume_24h_usd": 3031116.083196,
+      "volume_24h_m": 3.03
+    },
+    {
+      "symbol": "IMXUSDT",
+      "base_asset": "IMX",
+      "onboard_date": "2022-02-10",
+      "age_years": 4.64,
+      "volume_24h_usd": 3005509.892,
+      "volume_24h_m": 3.01
+    },
+    {
+      "symbol": "GMTUSDT",
+      "base_asset": "GMT",
+      "onboard_date": "2022-03-14",
+      "age_years": 4.55,
+      "volume_24h_usd": 2999010.624901,
+      "volume_24h_m": 3.0
+    },
+    {
+      "symbol": "KAVAUSDT",
+      "base_asset": "KAVA",
+      "onboard_date": "2020-07-28",
+      "age_years": 6.18,
+      "volume_24h_usd": 2956399.714665,
+      "volume_24h_m": 2.96
+    },
+    {
+      "symbol": "ETHWUSDT",
+      "base_asset": "ETHW",
+      "onboard_date": "2023-11-28",
+      "age_years": 2.84,
+      "volume_24h_usd": 2932627.957,
+      "volume_24h_m": 2.93
+    },
+    {
+      "symbol": "NEOUSDT",
+      "base_asset": "NEO",
+      "onboard_date": "2020-02-17",
+      "age_years": 6.62,
+      "volume_24h_usd": 2848117.898,
+      "volume_24h_m": 2.85
+    },
+    {
+      "symbol": "1000RATSUSDT",
+      "base_asset": "1000RATS",
+      "onboard_date": "2023-12-15",
+      "age_years": 2.79,
+      "volume_24h_usd": 2824968.57712,
+      "volume_24h_m": 2.82
+    },
+    {
+      "symbol": "BICOUSDT",
+      "base_asset": "BICO",
+      "onboard_date": "2023-09-28",
+      "age_years": 3.01,
+      "volume_24h_usd": 2818353.67079,
+      "volume_24h_m": 2.82
+    },
+    {
+      "symbol": "ARKMUSDT",
+      "base_asset": "ARKM",
+      "onboard_date": "2023-07-28",
+      "age_years": 3.18,
+      "volume_24h_usd": 2783201.8902,
+      "volume_24h_m": 2.78
+    },
+    {
+      "symbol": "YFIUSDT",
+      "base_asset": "YFI",
+      "onboard_date": "2020-08-31",
+      "age_years": 6.08,
+      "volume_24h_usd": 2743845.4,
+      "volume_24h_m": 2.74
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "base_asset": "ROSE",
+      "onboard_date": "2021-12-31",
+      "age_years": 4.75,
+      "volume_24h_usd": 2673430.453379,
+      "volume_24h_m": 2.67
+    },
+    {
+      "symbol": "XVSUSDT",
+      "base_asset": "XVS",
+      "onboard_date": "2023-04-12",
+      "age_years": 3.47,
+      "volume_24h_usd": 2536852.784,
+      "volume_24h_m": 2.54
+    },
+    {
+      "symbol": "ONTUSDT",
+      "base_asset": "ONT",
+      "onboard_date": "2020-02-11",
+      "age_years": 6.64,
+      "volume_24h_usd": 2516300.4613,
+      "volume_24h_m": 2.52
+    },
+    {
+      "symbol": "METISUSDT",
+      "base_asset": "METIS",
+      "onboard_date": "2024-03-12",
+      "age_years": 2.55,
+      "volume_24h_usd": 2353154.4199,
+      "volume_24h_m": 2.35
+    },
+    {
+      "symbol": "ARPAUSDT",
+      "base_asset": "ARPA",
+      "onboard_date": "2021-10-18",
+      "age_years": 4.95,
+      "volume_24h_usd": 2353012.607277,
+      "volume_24h_m": 2.35
+    },
+    {
+      "symbol": "BEAMXUSDT",
+      "base_asset": "BEAMX",
+      "onboard_date": "2023-11-17",
+      "age_years": 2.87,
+      "volume_24h_usd": 2351357.511616,
+      "volume_24h_m": 2.35
+    },
+    {
+      "symbol": "API3USDT",
+      "base_asset": "API3",
+      "onboard_date": "2022-02-21",
+      "age_years": 4.61,
+      "volume_24h_usd": 2347373.9282,
+      "volume_24h_m": 2.35
+    },
+    {
+      "symbol": "1INCHUSDT",
+      "base_asset": "1INCH",
+      "onboard_date": "2020-12-25",
+      "age_years": 5.77,
+      "volume_24h_usd": 2342995.29418,
+      "volume_24h_m": 2.34
+    },
+    {
+      "symbol": "BTCDOMUSDT",
+      "base_asset": "BTCDOM",
+      "onboard_date": "2021-06-17",
+      "age_years": 5.29,
+      "volume_24h_usd": 2249561.7,
+      "volume_24h_m": 2.25
+    },
+    {
+      "symbol": "IDUSDT",
+      "base_asset": "ID",
+      "onboard_date": "2023-03-23",
+      "age_years": 3.53,
+      "volume_24h_usd": 2234229.68661,
+      "volume_24h_m": 2.23
+    },
+    {
+      "symbol": "CELRUSDT",
+      "base_asset": "CELR",
+      "onboard_date": "2021-03-29",
+      "age_years": 5.51,
+      "volume_24h_usd": 2209206.832947,
+      "volume_24h_m": 2.21
+    },
+    {
+      "symbol": "QTUMUSDT",
+      "base_asset": "QTUM",
+      "onboard_date": "2020-02-20",
+      "age_years": 6.61,
+      "volume_24h_usd": 2190877.48152,
+      "volume_24h_m": 2.19
+    },
+    {
+      "symbol": "SKLUSDT",
+      "base_asset": "SKL",
+      "onboard_date": "2020-08-24",
+      "age_years": 6.1,
+      "volume_24h_usd": 2170990.046495,
+      "volume_24h_m": 2.17
+    },
+    {
+      "symbol": "POPCATUSDT",
+      "base_asset": "POPCAT",
+      "onboard_date": "2024-08-22",
+      "age_years": 2.11,
+      "volume_24h_usd": 2165232.39011,
+      "volume_24h_m": 2.17
+    },
+    {
+      "symbol": "BIGTIMEUSDT",
+      "base_asset": "BIGTIME",
+      "onboard_date": "2023-10-12",
+      "age_years": 2.97,
+      "volume_24h_usd": 2145699.140205,
+      "volume_24h_m": 2.15
+    },
+    {
+      "symbol": "RSRUSDT",
+      "base_asset": "RSR",
+      "onboard_date": "2020-10-19",
+      "age_years": 5.95,
+      "volume_24h_usd": 2139263.600342,
+      "volume_24h_m": 2.14
+    },
+    {
+      "symbol": "MEMEUSDT",
+      "base_asset": "MEME",
+      "onboard_date": "2023-11-03",
+      "age_years": 2.91,
+      "volume_24h_usd": 2131895.5354643,
+      "volume_24h_m": 2.13
+    },
+    {
+      "symbol": "XVGUSDT",
+      "base_asset": "XVG",
+      "onboard_date": "2023-07-05",
+      "age_years": 3.24,
+      "volume_24h_usd": 2100324.344954,
+      "volume_24h_m": 2.1
+    },
+    {
+      "symbol": "BSVUSDT",
+      "base_asset": "BSV",
+      "onboard_date": "2023-10-20",
+      "age_years": 2.95,
+      "volume_24h_usd": 2039752.559,
+      "volume_24h_m": 2.04
+    },
+    {
+      "symbol": "STEEMUSDT",
+      "base_asset": "STEEM",
+      "onboard_date": "2023-11-08",
+      "age_years": 2.89,
+      "volume_24h_usd": 2004662.81308,
+      "volume_24h_m": 2.0
+    },
+    {
+      "symbol": "LUNA2USDT",
+      "base_asset": "LUNA2",
+      "onboard_date": "2022-09-09",
+      "age_years": 4.06,
+      "volume_24h_usd": 1974882.04449,
+      "volume_24h_m": 1.97
+    },
+    {
+      "symbol": "ZILUSDT",
+      "base_asset": "ZIL",
+      "onboard_date": "2020-06-18",
+      "age_years": 6.29,
+      "volume_24h_usd": 1967039.642868,
+      "volume_24h_m": 1.97
+    },
+    {
+      "symbol": "ASTRUSDT",
+      "base_asset": "ASTR",
+      "onboard_date": "2023-02-13",
+      "age_years": 3.63,
+      "volume_24h_usd": 1927628.269902,
+      "volume_24h_m": 1.93
+    },
+    {
+      "symbol": "ALTUSDT",
+      "base_asset": "ALT",
+      "onboard_date": "2024-01-25",
+      "age_years": 2.68,
+      "volume_24h_usd": 1903496.709488,
+      "volume_24h_m": 1.9
+    },
+    {
+      "symbol": "MTLUSDT",
+      "base_asset": "MTL",
+      "onboard_date": "2021-03-31",
+      "age_years": 5.5,
+      "volume_24h_usd": 1871591.3071,
+      "volume_24h_m": 1.87
+    },
+    {
+      "symbol": "CATIUSDT",
+      "base_asset": "CATI",
+      "onboard_date": "2024-09-20",
+      "age_years": 2.03,
+      "volume_24h_usd": 1771981.42051,
+      "volume_24h_m": 1.77
+    },
+    {
+      "symbol": "PIXELUSDT",
+      "base_asset": "PIXEL",
+      "onboard_date": "2024-02-19",
+      "age_years": 2.61,
+      "volume_24h_usd": 1739775.142313,
+      "volume_24h_m": 1.74
+    },
+    {
+      "symbol": "MASKUSDT",
+      "base_asset": "MASK",
+      "onboard_date": "2021-07-16",
+      "age_years": 5.21,
+      "volume_24h_usd": 1709129.3442,
+      "volume_24h_m": 1.71
+    },
+    {
+      "symbol": "BRETTUSDT",
+      "base_asset": "BRETT",
+      "onboard_date": "2024-08-20",
+      "age_years": 2.11,
+      "volume_24h_usd": 1687497.478155,
+      "volume_24h_m": 1.69
+    },
+    {
+      "symbol": "NOTUSDT",
+      "base_asset": "NOT",
+      "onboard_date": "2024-05-16",
+      "age_years": 2.37,
+      "volume_24h_usd": 1649499.3181989,
+      "volume_24h_m": 1.65
+    },
+    {
+      "symbol": "1000SATSUSDT",
+      "base_asset": "1000SATS",
+      "onboard_date": "2023-12-12",
+      "age_years": 2.8,
+      "volume_24h_usd": 1645100.94815863,
+      "volume_24h_m": 1.65
+    },
+    {
+      "symbol": "SPELLUSDT",
+      "base_asset": "SPELL",
+      "onboard_date": "2022-09-05",
+      "age_years": 4.07,
+      "volume_24h_usd": 1609189.7784571,
+      "volume_24h_m": 1.61
+    },
+    {
+      "symbol": "CHRUSDT",
+      "base_asset": "CHR",
+      "onboard_date": "2021-03-12",
+      "age_years": 5.55,
+      "volume_24h_usd": 1582418.70532,
+      "volume_24h_m": 1.58
+    },
+    {
+      "symbol": "RONINUSDT",
+      "base_asset": "RONIN",
+      "onboard_date": "2024-02-06",
+      "age_years": 2.65,
+      "volume_24h_usd": 1556124.855855,
+      "volume_24h_m": 1.56
+    },
+    {
+      "symbol": "RIFUSDT",
+      "base_asset": "RIF",
+      "onboard_date": "2023-10-21",
+      "age_years": 2.94,
+      "volume_24h_usd": 1544935.99211,
+      "volume_24h_m": 1.54
+    },
+    {
+      "symbol": "POLYXUSDT",
+      "base_asset": "POLYX",
+      "onboard_date": "2023-10-25",
+      "age_years": 2.93,
+      "volume_24h_usd": 1536141.6609,
+      "volume_24h_m": 1.54
+    },
+    {
+      "symbol": "RLCUSDT",
+      "base_asset": "RLC",
+      "onboard_date": "2020-07-31",
+      "age_years": 6.17,
+      "volume_24h_usd": 1534030.7355,
+      "volume_24h_m": 1.53
+    },
+    {
+      "symbol": "WOOUSDT",
+      "base_asset": "WOO",
+      "onboard_date": "2022-04-07",
+      "age_years": 4.48,
+      "volume_24h_usd": 1502429.93029,
+      "volume_24h_m": 1.5
+    },
+    {
+      "symbol": "AXLUSDT",
+      "base_asset": "AXL",
+      "onboard_date": "2024-03-01",
+      "age_years": 2.58,
+      "volume_24h_usd": 1499452.950325,
+      "volume_24h_m": 1.5
+    },
+    {
+      "symbol": "ACHUSDT",
+      "base_asset": "ACH",
+      "onboard_date": "2023-02-21",
+      "age_years": 3.61,
+      "volume_24h_usd": 1476429.238633,
+      "volume_24h_m": 1.48
+    },
+    {
+      "symbol": "FIDAUSDT",
+      "base_asset": "FIDA",
+      "onboard_date": "2024-09-19",
+      "age_years": 2.03,
+      "volume_24h_usd": 1467159.34483,
+      "volume_24h_m": 1.47
+    },
+    {
+      "symbol": "YGGUSDT",
+      "base_asset": "YGG",
+      "onboard_date": "2023-08-05",
+      "age_years": 3.16,
+      "volume_24h_usd": 1458948.57836,
+      "volume_24h_m": 1.46
+    },
+    {
+      "symbol": "ILVUSDT",
+      "base_asset": "ILV",
+      "onboard_date": "2023-11-10",
+      "age_years": 2.89,
+      "volume_24h_usd": 1427820.1511,
+      "volume_24h_m": 1.43
+    },
+    {
+      "symbol": "DOGSUSDT",
+      "base_asset": "DOGS",
+      "onboard_date": "2024-08-26",
+      "age_years": 2.1,
+      "volume_24h_usd": 1421070.23333596,
+      "volume_24h_m": 1.42
+    },
+    {
+      "symbol": "DODOXUSDT",
+      "base_asset": "DODOX",
+      "onboard_date": "2023-08-08",
+      "age_years": 3.15,
+      "volume_24h_usd": 1408331.213538,
+      "volume_24h_m": 1.41
+    },
+    {
+      "symbol": "EDUUSDT",
+      "base_asset": "EDU",
+      "onboard_date": "2023-04-28",
+      "age_years": 3.43,
+      "volume_24h_usd": 1390178.50006,
+      "volume_24h_m": 1.39
+    },
+    {
+      "symbol": "AGLDUSDT",
+      "base_asset": "AGLD",
+      "onboard_date": "2023-07-29",
+      "age_years": 3.18,
+      "volume_24h_usd": 1374865.0198,
+      "volume_24h_m": 1.37
+    },
+    {
+      "symbol": "GASUSDT",
+      "base_asset": "GAS",
+      "onboard_date": "2023-10-25",
+      "age_years": 2.93,
+      "volume_24h_usd": 1371040.7359,
+      "volume_24h_m": 1.37
+    },
+    {
+      "symbol": "BATUSDT",
+      "base_asset": "BAT",
+      "onboard_date": "2020-02-13",
+      "age_years": 6.63,
+      "volume_24h_usd": 1368154.812405,
+      "volume_24h_m": 1.37
+    },
+    {
+      "symbol": "DYMUSDT",
+      "base_asset": "DYM",
+      "onboard_date": "2024-02-07",
+      "age_years": 2.65,
+      "volume_24h_usd": 1327044.803476,
+      "volume_24h_m": 1.33
+    },
+    {
+      "symbol": "ANKRUSDT",
+      "base_asset": "ANKR",
+      "onboard_date": "2021-01-25",
+      "age_years": 5.68,
+      "volume_24h_usd": 1319530.338083,
+      "volume_24h_m": 1.32
+    },
+    {
+      "symbol": "GMXUSDT",
+      "base_asset": "GMX",
+      "onboard_date": "2023-02-16",
+      "age_years": 3.62,
+      "volume_24h_usd": 1276562.5734,
+      "volume_24h_m": 1.28
+    },
+    {
+      "symbol": "C98USDT",
+      "base_asset": "C98",
+      "onboard_date": "2021-08-23",
+      "age_years": 5.11,
+      "volume_24h_usd": 1270113.02243,
+      "volume_24h_m": 1.27
+    },
+    {
+      "symbol": "AUCTIONUSDT",
+      "base_asset": "AUCTION",
+      "onboard_date": "2023-12-15",
+      "age_years": 2.79,
+      "volume_24h_usd": 1258384.27624,
+      "volume_24h_m": 1.26
+    },
+    {
+      "symbol": "SFPUSDT",
+      "base_asset": "SFP",
+      "onboard_date": "2021-02-24",
+      "age_years": 5.6,
+      "volume_24h_usd": 1249554.7791,
+      "volume_24h_m": 1.25
+    },
+    {
+      "symbol": "SSVUSDT",
+      "base_asset": "SSV",
+      "onboard_date": "2023-02-23",
+      "age_years": 3.6,
+      "volume_24h_usd": 1231072.01722,
+      "volume_24h_m": 1.23
+    },
+    {
+      "symbol": "HMSTRUSDT",
+      "base_asset": "HMSTR",
+      "onboard_date": "2024-09-26",
+      "age_years": 2.01,
+      "volume_24h_usd": 1221067.0141879,
+      "volume_24h_m": 1.22
+    },
+    {
+      "symbol": "BANDUSDT",
+      "base_asset": "BAND",
+      "onboard_date": "2020-07-29",
+      "age_years": 6.17,
+      "volume_24h_usd": 1197924.4852,
+      "volume_24h_m": 1.2
+    },
+    {
+      "symbol": "USTCUSDT",
+      "base_asset": "USTC",
+      "onboard_date": "2023-11-27",
+      "age_years": 2.84,
+      "volume_24h_usd": 1190299.663938,
+      "volume_24h_m": 1.19
+    },
+    {
+      "symbol": "LQTYUSDT",
+      "base_asset": "LQTY",
+      "onboard_date": "2023-03-08",
+      "age_years": 3.57,
+      "volume_24h_usd": 1169239.63482,
+      "volume_24h_m": 1.17
+    },
+    {
+      "symbol": "MANTAUSDT",
+      "base_asset": "MANTA",
+      "onboard_date": "2024-01-18",
+      "age_years": 2.7,
+      "volume_24h_usd": 1142601.62173,
+      "volume_24h_m": 1.14
+    },
+    {
+      "symbol": "1000XECUSDT",
+      "base_asset": "1000XEC",
+      "onboard_date": "2021-09-16",
+      "age_years": 5.04,
+      "volume_24h_usd": 1140795.632956,
+      "volume_24h_m": 1.14
+    },
+    {
+      "symbol": "1MBABYDOGEUSDT",
+      "base_asset": "1MBABYDOGE",
+      "onboard_date": "2024-09-16",
+      "age_years": 2.04,
+      "volume_24h_usd": 1139026.8302688,
+      "volume_24h_m": 1.14
+    }
+  ]
+}

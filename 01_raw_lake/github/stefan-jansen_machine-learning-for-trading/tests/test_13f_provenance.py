@@ -1,0 +1,422 @@
+import importlib
+import json
+import xml.etree.ElementTree as ET
+from datetime import date
+from pathlib import Path
+
+import numpy as np
+import polars as pl
+import pytest
+
+from data.equities import loader
+
+downloader = importlib.import_module("data.equities.positioning.13f_download")
+
+
+class _Response:
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return {
+            "name": "Example Manager",
+            "filings": {
+                "recent": {
+                    "form": ["13F-HR"],
+                    "accessionNumber": ["0001234567-24-000001"],
+                    "reportDate": ["2024-09-30"],
+                    "filingDate": ["2024-11-14"],
+                }
+            },
+        }
+
+
+def test_recent_filings_preserve_sec_report_date(monkeypatch) -> None:
+    monkeypatch.setattr(downloader.requests, "get", lambda *args, **kwargs: _Response())
+
+    filings = downloader.get_recent_13f_filings("0001234567", num_filings=1)
+
+    assert filings[0]["report_date"] == "2024-09-30"
+    assert filings[0]["filing_date"] == "2024-11-14"
+
+
+def test_bulk_normalization_preserves_period_of_report() -> None:
+    infotable = pl.DataFrame(
+        {
+            "ACCESSION_NUMBER": ["0001234567-24-000001"],
+            "NAMEOFISSUER": ["Example Issuer"],
+            "CUSIP": ["123456789"],
+            "VALUE": [1000],
+            "SSHPRNAMT": [50],
+            "PUTCALL": ["PUT"],
+        }
+    )
+    coverpage = pl.DataFrame(
+        {
+            "ACCESSION_NUMBER": ["0001234567-24-000001"],
+            "FILINGMANAGER_NAME": ["Example Manager"],
+        }
+    )
+    submission = pl.DataFrame(
+        {
+            "ACCESSION_NUMBER": ["0001234567-24-000001"],
+            "SUBMISSIONTYPE": ["13F-HR"],
+            "CIK": ["1234567"],
+            "PERIODOFREPORT": ["30-SEP-2024"],
+            "FILING_DATE": ["14-NOV-2024"],
+        }
+    )
+
+    result = downloader._normalize_bulk_to_canonical(infotable, coverpage, submission)
+
+    assert result["report_date"].to_list() == [date(2024, 9, 30)]
+    assert result["filing_date"].to_list() == [date(2024, 11, 14)]
+    assert result["put_call"].to_list() == ["PUT"]
+
+
+def test_per_cik_parser_preserves_option_marker(monkeypatch) -> None:
+    root = ET.fromstring(
+        """
+        <informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+          <infoTable>
+            <nameOfIssuer>Example Inc</nameOfIssuer>
+            <cusip>123456789</cusip>
+            <value>100</value>
+            <shrsOrPrnAmt><sshPrnamt>10</sshPrnamt></shrsOrPrnAmt>
+          </infoTable>
+          <infoTable>
+            <nameOfIssuer>Example Inc</nameOfIssuer>
+            <cusip>123456789</cusip>
+            <value>900</value>
+            <shrsOrPrnAmt><sshPrnamt>90</sshPrnamt></shrsOrPrnAmt>
+            <putCall>PUT</putCall>
+          </infoTable>
+        </informationTable>
+        """
+    )
+    monkeypatch.setattr(downloader, "fetch_13f_xml_root", lambda *args: root)
+
+    holdings = downloader.parse_13f_holdings("0001234567", "0001234567-24-000001")
+
+    assert [row["put_call"] for row in holdings] == [None, "PUT"]
+
+
+def test_derived_graph_is_latest_quarter_positive_equity_only() -> None:
+    holdings = pl.DataFrame(
+        {
+            "cik": ["1", "1", "1", "1", "2", "3", "4"],
+            "accession_no": ["a", "a", "a", "a", "b", "c", "d"],
+            "issuer": [
+                "EXAMPLE",
+                "EXAMPLE INC",
+                "EXAMPLE",
+                "EXAMPLE",
+                "EXAMPLE",
+                "STALE",
+                "ZERO",
+            ],
+            "cusip": ["123", "123", "123", "123", "123", "999", "000"],
+            "value_thousands": [100, 50, 0, 900, 200, 999, 0],
+            "shares": [10, 5, 1, 90, 20, 99, 0],
+            "put_call": [None, None, None, "PUT", None, None, None],
+            "report_date": [
+                date(2024, 9, 30),
+                date(2024, 9, 30),
+                date(2024, 9, 30),
+                date(2024, 9, 30),
+                date(2024, 9, 30),
+                date(2024, 6, 30),
+                date(2024, 9, 30),
+            ],
+            "filing_date": [
+                date(2024, 11, 10),
+                date(2024, 11, 10),
+                date(2024, 11, 10),
+                date(2024, 11, 10),
+                date(2024, 11, 14),
+                date(2024, 8, 14),
+                date(2024, 11, 12),
+            ],
+            "company_name": [
+                "Manager 1",
+                "Manager 1",
+                "Manager 1",
+                "Manager 1",
+                "Manager 2",
+                "Old",
+                "Zero",
+            ],
+        }
+    )
+
+    features, edges, matrix, stocks = downloader.build_features_and_matrix(holdings)
+
+    assert edges.sort("institution_id")["weight_value"].to_list() == [150, 200]
+    assert edges.sort("institution_id")["weight_shares"].to_list() == [16, 20]
+    assert edges["stock_id"].unique().to_list() == ["123"]
+    assert features["total_inst_value_usd"].to_list() == [350]
+    assert features["n_inst_holders"].to_list() == [2]
+    assert features["timestamp"].to_list() == [date(2024, 11, 14)]
+    assert stocks == ["123"]
+    np.testing.assert_allclose(matrix, np.ones((1, 1), dtype=np.float32), atol=1e-6)
+
+
+def _two_manager_holdings(second_manager_report_date: date) -> pl.DataFrame:
+    """Two managers, each with one long-equity lot, at possibly different quarters."""
+    return pl.DataFrame(
+        {
+            "cik": ["1", "1", "2"],
+            "accession_no": ["a", "b", "c"],
+            "issuer": ["EXAMPLE", "EXAMPLE", "EXAMPLE"],
+            "cusip": ["123", "123", "123"],
+            "value_thousands": [100, 300, 200],
+            "shares": [10, 30, 20],
+            "put_call": [None, None, None],
+            "report_date": [date(2024, 6, 30), date(2024, 9, 30), second_manager_report_date],
+            "filing_date": [date(2024, 8, 14), date(2024, 11, 10), date(2024, 8, 14)],
+            "company_name": ["Manager 1", "Manager 1", "Manager 2"],
+        }
+    )
+
+
+def test_partially_filed_quarter_falls_back_to_the_last_complete_one(capsys) -> None:
+    # Manager 2 has not filed for 2024-09-30 yet; using it would read as an exit.
+    holdings = _two_manager_holdings(date(2024, 6, 30))
+
+    features, edges, _matrix, _stocks = downloader.build_features_and_matrix(
+        holdings, expected_ciks=["1", "2"]
+    )
+
+    assert edges["report_date"].unique().to_list() == [date(2024, 6, 30)]
+    assert edges["weight_value"].to_list() == [100, 200]
+    assert features["total_inst_value_usd"].to_list() == [300]
+    assert "0 of 2" not in capsys.readouterr().out
+
+
+def test_complete_newest_quarter_is_used_as_is() -> None:
+    holdings = _two_manager_holdings(date(2024, 9, 30))
+
+    _features, edges, _matrix, _stocks = downloader.build_features_and_matrix(
+        holdings, expected_ciks=["1", "2"]
+    )
+
+    assert edges["report_date"].unique().to_list() == [date(2024, 9, 30)]
+    assert edges["weight_value"].to_list() == [300, 200]
+
+
+def test_ownership_change_compares_two_fully_filed_quarters() -> None:
+    # Manager 2 skipped 2024-06-30, so that quarter must not be the comparison
+    # base: its absence there is a gap in coverage, not a sold position.
+    holdings = pl.DataFrame(
+        {
+            "cik": ["1", "1", "1", "2", "2"],
+            "accession_no": ["a", "b", "c", "d", "e"],
+            "issuer": ["EXAMPLE"] * 5,
+            "cusip": ["123"] * 5,
+            "value_thousands": [100, 200, 400, 50, 100],
+            "shares": [10, 20, 40, 5, 10],
+            "put_call": [None] * 5,
+            "report_date": [
+                date(2024, 3, 31),
+                date(2024, 6, 30),
+                date(2024, 9, 30),
+                date(2024, 3, 31),
+                date(2024, 9, 30),
+            ],
+            "filing_date": [
+                date(2024, 5, 14),
+                date(2024, 8, 14),
+                date(2024, 11, 14),
+                date(2024, 5, 14),
+                date(2024, 11, 14),
+            ],
+            "company_name": ["Manager 1"] * 3 + ["Manager 2"] * 2,
+        }
+    )
+
+    features, _edges, _matrix, _stocks = downloader.build_features_and_matrix(
+        holdings, expected_ciks=["1", "2"]
+    )
+
+    # 2024-09-30 (500) against 2024-03-31 (150), not against the partial 2024-06-30.
+    assert features["inst_value_change_usd"].to_list() == [350]
+    assert features["inst_pct_change"].to_list() == [pytest.approx(350 / 150)]
+
+
+def test_options_only_filing_still_counts_as_having_filed() -> None:
+    # Manager 2 filed for 2024-09-30 but disclosed only a put. It has filed, so
+    # the newest quarter is complete and must not be stepped back from.
+    holdings = _two_manager_holdings(date(2024, 9, 30)).with_columns(
+        pl.when(pl.col("accession_no") == "c")
+        .then(pl.lit("PUT"))
+        .otherwise(pl.col("put_call"))
+        .alias("put_call")
+    )
+
+    _features, edges, _matrix, _stocks = downloader.build_features_and_matrix(
+        holdings, expected_ciks=["1", "2"]
+    )
+
+    assert edges["report_date"].unique().to_list() == [date(2024, 9, 30)]
+    assert edges["institution_id"].to_list() == ["1"]
+
+
+def test_single_quarter_still_emits_the_ownership_change_columns() -> None:
+    holdings = _two_manager_holdings(date(2024, 9, 30)).filter(
+        pl.col("report_date") == date(2024, 9, 30)
+    )
+
+    features, _edges, _matrix, _stocks = downloader.build_features_and_matrix(
+        holdings, expected_ciks=["1", "2"]
+    )
+
+    assert features["inst_value_change_usd"].to_list() == [0.0]
+    assert features["inst_pct_change"].to_list() == [None]
+
+
+def test_pre_2023_filings_are_refused_rather_than_mislabeled_as_usd() -> None:
+    holdings = _two_manager_holdings(date(2024, 9, 30)).with_columns(
+        pl.when(pl.col("accession_no") == "a")
+        .then(pl.lit(date(2022, 11, 14)))
+        .otherwise(pl.col("filing_date"))
+        .alias("filing_date")
+    )
+
+    with pytest.raises(ValueError, match="thousands to dollars"):
+        downloader.build_features_and_matrix(holdings, expected_ciks=["1", "2"])
+
+
+def test_no_quarter_covered_by_every_institution_is_refused() -> None:
+    holdings = _two_manager_holdings(date(2024, 9, 30))
+
+    with pytest.raises(ValueError, match="No 13F report date is covered"):
+        downloader.build_features_and_matrix(holdings, expected_ciks=["1", "2", "3"])
+
+
+def test_holdings_loader_parses_both_sec_dates(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "equities" / "positioning" / "13f" / "institutional_holdings.parquet"
+    target.parent.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "cik": ["0001234567"],
+            "accession_no": ["0001234567-24-000001"],
+            "issuer": ["Example Issuer"],
+            "cusip": ["123456789"],
+            "value_thousands": [1000],
+            "shares": [50],
+            "put_call": [None],
+            "report_date": ["2024-09-30"],
+            "filing_date": ["2024-11-14"],
+            "company_name": ["Example Manager"],
+        }
+    ).write_parquet(target)
+    monkeypatch.setattr(loader, "ML4T_DATA_PATH", tmp_path)
+
+    result = loader.load_institutional_holdings_13f()
+
+    assert result.schema["report_date"] == pl.Date
+    assert result.schema["filing_date"] == pl.Date
+    assert result["put_call"].to_list() == [None]
+
+
+def test_availability_waits_for_the_last_filing_of_the_quarter() -> None:
+    """A late options-only filing completes the quarter and must move the timestamp.
+
+    `_complete_report_dates` counts any disclosed row as evidence a manager filed, so an
+    options-only filing makes the newest quarter complete. Reading `timestamp` off the
+    long-equity rows alone left the graph claiming to have been available before that
+    filing was public, which is lookahead: the quarter was not usable until the last of
+    its filings landed.
+    """
+    holdings = _two_manager_holdings(date(2024, 9, 30)).with_columns(
+        pl.when(pl.col("accession_no") == "c")
+        .then(pl.lit("PUT"))
+        .otherwise(pl.col("put_call"))
+        .alias("put_call"),
+        pl.when(pl.col("accession_no") == "c")
+        .then(pl.lit(date(2024, 11, 14)))
+        .otherwise(pl.col("filing_date"))
+        .alias("filing_date"),
+    )
+
+    features, _edges, _matrix, _stocks = downloader.build_features_and_matrix(
+        holdings, expected_ciks=["1", "2"]
+    )
+
+    # Manager 1's long-equity filing landed 2024-11-10; manager 2's options-only filing,
+    # which is what made the quarter complete, landed 2024-11-14.
+    assert features["timestamp"].unique().to_list() == [date(2024, 11, 14)]
+
+
+def test_availability_is_the_last_filing_when_every_manager_holds_equity() -> None:
+    """The ordinary case is unchanged: all rows are long equity, so both readings agree."""
+    holdings = _two_manager_holdings(date(2024, 9, 30))
+
+    features, _edges, _matrix, _stocks = downloader.build_features_and_matrix(
+        holdings, expected_ciks=["1", "2"]
+    )
+
+    assert features["timestamp"].unique().to_list() == [date(2024, 11, 10)]
+
+
+def _multi_quarter_13f_artifact() -> bool:
+    """Two quarters at least: one is the case this test is not about.
+
+    The defect is a *display* horizon narrowing a multi-quarter artifact. A valid artifact
+    built with `--num-filings 1` takes the notebook's single-quarter branch correctly and
+    would fail the "Added momentum features" assertion for the right reason, so the skip
+    has to read the artifact rather than only look for it.
+    """
+    from utils.config import ML4T_DATA_PATH
+
+    path = (
+        Path(ML4T_DATA_PATH) / "equities" / "positioning" / "13f" / "institutional_holdings.parquet"
+    )
+    if not path.is_file():
+        return False
+    try:
+        return pl.read_parquet(path, columns=["report_date"])["report_date"].n_unique() > 1
+    except Exception:  # noqa: BLE001 - an unreadable artifact is a skip, not a failure
+        return False
+
+
+@pytest.mark.skipif(
+    not _multi_quarter_13f_artifact(),
+    reason="needs a multi-quarter production 13F artifact; CI checks out no such data",
+)
+def test_a_narrowed_display_horizon_still_matches_the_producer(tmp_path) -> None:
+    """`NUM_QUARTERS` narrows what the notebook shows, not what the producer compared.
+
+    Truncating `positions_df` before the ownership-change table was built left
+    `NUM_QUARTERS=1` over a multi-quarter artifact with nothing to compare, so the
+    no-comparison branch emitted 0.0 and null while the producer - which never sees this
+    parameter - compared the artifact's last two complete quarters, and the notebook's own
+    parity assertion failed. Momentum is built from every complete quarter now.
+
+    Executed rather than reimplemented: the assertion under test is the notebook's own, and
+    a test that recomputed the comparison here would be checking a second implementation.
+    """
+    import papermill
+
+    notebook = Path(__file__).resolve().parents[1] / "22_rag_financial_research"
+    notebook = notebook / "07_institutional_holdings_graph.ipynb"
+    executed = tmp_path / "num_quarters_1.ipynb"
+
+    papermill.execute_notebook(
+        str(notebook),
+        str(executed),
+        parameters={"NUM_QUARTERS": 1},
+        cwd=str(Path(__file__).resolve().parents[1]),
+        progress_bar=False,
+    )
+
+    printed = "\n".join(
+        "".join(output.get("text", []))
+        for cell in json.loads(executed.read_text())["cells"]
+        for output in cell.get("outputs", [])
+    )
+    assert "artifact parity: PASS" in printed
+    # The momentum table came from the untruncated panel: one displayed quarter cannot
+    # produce a comparison, so this line is what distinguishes the fix from the defect.
+    assert "Added momentum features" in printed
+    assert "across 1 reporting quarters" in printed

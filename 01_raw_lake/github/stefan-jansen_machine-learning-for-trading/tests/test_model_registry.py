@@ -1,0 +1,736 @@
+"""Test model notebooks produce correct registry entries in isolation.
+
+Runs each case study model notebook (stage >= 06) with minimal parameters
+in an isolated environment. Production data is read via symlinks; all
+writes (registry.db, predictions, results JSON) go to a temp directory.
+
+The production registry is NEVER opened or touched.
+
+Design:
+    1. Session fixture creates temp dir with symlinked read-only data
+    2. Each notebook runs via Papermill with aggressive param reduction
+    3. ML4T_OUTPUT_DIR redirects all get_case_study_dir() writes to temp
+    4. After each run, query the test registry.db for expected entries
+
+The goal is code-path coverage, not model quality. Params are set to the
+minimum that still exercises the training→register→predict loop and produces
+valid cross-sectional metrics: MAX_SYMBOLS=5, MAX_FOLDS=2, N_EPOCHS=2,
+NUM_BOOST_ROUND=20.
+
+Usage:
+    # All model notebooks (~15-20 min)
+    uv run pytest tests/test_model_registry.py -v
+
+    # Specific case study
+    uv run pytest tests/test_model_registry.py -v -k "crypto_perps_funding"
+
+    # Specific model family across all case studies
+    uv run pytest tests/test_model_registry.py -v -k "06_linear"
+
+    # Single notebook
+    uv run pytest tests/test_model_registry.py -v -k "etfs and 06_linear"
+
+    # Dry run — see what would be tested
+    uv run pytest tests/test_model_registry.py --collect-only
+"""
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from tests.pm_helpers import (
+    STAGE_RE,
+    get_overrides,
+    gpu_skip_reason,
+    resolved_registry_path,
+    run_notebook,
+    stage_sort_key,
+)
+
+REPO_ROOT = Path(__file__).parent.parent
+PROD_CS_DIR = REPO_ROOT / "case_studies"
+
+# Ordered smallest-to-largest for faster feedback
+CASE_STUDIES = [
+    "crypto_perps_funding",
+    "fx_pairs",
+    "cme_futures",
+    "etfs",
+    "sp500_options",
+    "nasdaq100_microstructure",
+    "sp500_equity_option_analytics",
+    "us_firm_characteristics",
+    "us_equities_panel",
+]
+
+# Directories containing production pipeline artifacts (read-only).
+# Symlinked into the test output directory so model notebooks can read them.
+# Everything else (run_log/, results/, models/) is created fresh for writes.
+_READ_ONLY_DIRS = {"config", "features", "labels"}
+
+# Minimum stage number for model notebooks
+_MODEL_STAGE_MIN = 6
+_MODEL_STAGE_MIN_BY_CASE = {"us_firm_characteristics": 5}
+
+# Suffixes that are NOT model notebooks (backtest, strategy, diagnostics).
+# These depend on upstream predictions and should be tested separately.
+_EXCLUDED_SUFFIXES = frozenset(
+    {
+        "backtest",
+        "backtest_sweep",
+        "backtest_analysis",
+        "portfolio_management",
+        "costs",
+        "risk_management",
+        "model_analysis",
+        "strategy_analysis",
+        "synthesis",
+        "ic_diagnostic",
+        "prediction_ingestion",
+    }
+)
+
+# Latent factor models need more symbols than other families because factor
+# extraction requires a cross-section wide enough for the covariance matrix.
+_LATENT_FACTOR_SUFFIXES = frozenset(
+    {
+        "latent_factors",
+        "pca",
+        "ipca",
+        "sdf",
+        "cae",
+        "sae",
+        "term_structure_pca",
+    }
+)
+_LATENT_FACTOR_OVERRIDES = {
+    "MAX_SYMBOLS": 10,
+    "N_FACTORS": 3,
+}
+
+# Case studies with sparse data (monthly frequency) need more symbols
+# to have enough observations for CV splits.
+_SPARSE_DATA_CASE_STUDIES = frozenset({"us_firm_characteristics"})
+_SPARSE_DATA_OVERRIDES = {"MAX_SYMBOLS": 20}
+
+# Minimal parameters for code-path coverage. Family and sparse-data defaults
+# refine this base; notebook-specific overrides have final precedence.
+_QUICK_PARAMS = {
+    "MAX_SYMBOLS": 5,
+    "MAX_FOLDS": 2,
+    "N_EPOCHS": 2,
+    "NUM_BOOST_ROUND": 20,
+    "BATCH_SIZE": 64,
+    "LOOKBACK": 24,  # PatchTST needs lookback + stride >= patch_len (≥8); 24 leaves margin
+    "MAX_SAMPLES": 1000,
+    "CV_FOLDS": 2,
+    "N_PLACEBO": 3,
+    "N_FACTORS": 2,
+    "FORCE_RETRAIN": True,
+}
+
+# Model suffixes known to use register=True (training_runs + prediction_sets).
+# Matched against the suffix after the NN_ prefix, since notebook numbers
+# vary across case studies (e.g. causal_dml is 10, 11, 12, or 13 depending
+# on the case study).
+# Built from: grep -l "register=True" case_studies/*/[0-9][0-9]_*.py
+_REGISTERING_SUFFIXES = frozenset(
+    {
+        "linear",
+        "gbm",
+        "tabular_dl",
+        "dl_lstm",
+        "dl_patchtst",
+        "dl_tsmixer",
+        "dl_nlinear",
+        "dl_tcn",
+        "dl_weekly",
+        # NOTE: causal_dml notebooks register to ``causal_runs`` (DML effect
+        # estimates), not ``training_runs`` — so they are intentionally NOT in
+        # this set. Likewise ``NN_latent_factors`` is a thin index notebook that
+        # only displays the best already-registered factor IC; the factor models
+        # themselves register under their own sub-stems (pca/ipca/sdf/cae/sae,
+        # listed below). Both still execute; only the training-run-registration
+        # assertion is skipped for them.
+        "ipca",
+        "pca",
+        "sdf",
+        "cae",
+        "sae",
+        "lstm",
+        "patchtst",
+        "conditional_autoencoder",
+        "stochastic_discount_factor",
+        "supervised_autoencoder",
+    }
+)
+
+
+# A registering notebook records its own stem, in every case study. There used to be a map of
+# four exceptions here, holding notebooks that recorded the MODEL name instead - what the
+# pre-migration `run_case_study_model(..., notebook=f"dl_{MODEL}")` wrote. All four have since
+# migrated onto the research boundary and now record the stem, so the map expected values no
+# registry held any more and this assertion failed on a fully successful run. Measured on the
+# canonical registries on 2026-09-02:
+#
+#   cme_futures  09_dl_lstm     2026-08-30   (was expected to write `dl_lstm`)
+#   etfs         10_dl_tsmixer  2026-08-28   (`dl_tsmixer` on 2026-08-24, then the stem)
+#   sp500_options 09a_lstm      2026-09-01   (was expected to write `dl_lstm`)
+#   sp500_options 09b_patchtst  2026-09-01   (was expected to write `dl_patchtst`)
+#
+# The stem is the value that answers the question the column exists for - which notebook
+# produced this row. A model name cannot: two notebooks in different case studies fit the same
+# model. Do not reintroduce the map; if a notebook stops recording its stem, that is the defect.
+
+
+def _quick_parameters(
+    case_study: str,
+    stage: str,
+    override_params: dict,
+) -> tuple[dict, str]:
+    parameters = dict(_QUICK_PARAMS)
+
+    stage_match = STAGE_RE.match(stage)
+    suffix = stage[len(stage_match.group(0)) :] if stage_match else stage
+    if suffix in _LATENT_FACTOR_SUFFIXES:
+        parameters.update(_LATENT_FACTOR_OVERRIDES)
+    if case_study in _SPARSE_DATA_CASE_STUDIES:
+        parameters.update(_SPARSE_DATA_OVERRIDES)
+    # FORCE_RETRAIN is a training-family lever and there is no causal equivalent. A causal run is
+    # addressed by its request, so `fx_pairs/11_causal_dml` and
+    # `sp500_equity_option_analytics/12_causal_dml` raise "an identical complete causal request is
+    # reused; change the request to refit" the moment it arrives as True - the two of the nine
+    # causal notebooks that declare the parameter at all. Injecting it failed both whenever the
+    # case study's stage 01-05 artifacts were reachable, which is any maintainer worktree built
+    # with --case-study; a fresh worktree skips the test earlier and never saw it. Dropped before
+    # override_params so a notebook that wants it back can still say so in overrides.yaml.
+    if suffix == "causal_dml":
+        parameters.pop("FORCE_RETRAIN", None)
+    parameters.update(override_params)
+    return parameters, suffix
+
+
+def test_a_causal_notebook_is_not_asked_to_force_a_retrain() -> None:
+    """The lever exists for training families and has no causal counterpart.
+
+    Both causal notebooks that bind FORCE_RETRAIN raise on it rather than honouring it, so
+    injecting the default aborted them in cell 6 before any fit. A notebook may still ask for
+    it back through its own overrides, which is why this checks the default rather than the
+    parameter's absence.
+    """
+    causal, suffix = _quick_parameters("fx_pairs", "11_causal_dml", {})
+    assert suffix == "causal_dml"
+    assert "FORCE_RETRAIN" not in causal
+
+    training, _ = _quick_parameters("fx_pairs", "06_linear", {})
+    assert training["FORCE_RETRAIN"] is True
+
+    reinstated, _ = _quick_parameters("fx_pairs", "11_causal_dml", {"FORCE_RETRAIN": True})
+    assert reinstated["FORCE_RETRAIN"] is True
+
+
+def test_notebook_override_parameters_have_final_precedence() -> None:
+    parameters, suffix = _quick_parameters(
+        "sp500_equity_option_analytics",
+        "11b_ipca",
+        {"MAX_SYMBOLS": 12, "N_FACTORS": 2},
+    )
+
+    assert suffix == "ipca"
+    assert parameters["MAX_SYMBOLS"] == 12
+    assert parameters["N_FACTORS"] == 2
+
+
+def test_etf_checkpoint_contract_parameters_come_from_notebook_overrides() -> None:
+    """A notebook's own override beats the quick default, whichever name carries it.
+
+    Both etfs sequence notebooks moved onto the research boundary, so they no longer bind
+    `MAX_SYMBOLS`, `N_EPOCHS`, `BATCH_SIZE` or `LOOKBACK`: the window and the batch come from
+    the preset, the epoch budget from the patched fixture presets, and the universe and fold
+    reductions travel in `PREVIEW_REDUCTIONS`. This asserted the pre-conversion names, so it
+    was checking a transcription of `overrides.yaml` that the file had moved past.
+
+    What it is actually for is precedence - that `_quick_parameters` does not overwrite what
+    the notebook declared - so it is expressed against the names each notebook declares now.
+    """
+    for stage, expected in {
+        "09_dl_lstm": {"DEVICE": "cpu", "POPULATION_NAME": "etfs-lstm-preview"},
+        "10_dl_tsmixer": {"DEVICE": "cpu", "POPULATION_NAME": "etfs-tsmixer-preview"},
+    }.items():
+        overrides = get_overrides(f"case_studies/etfs/{stage}")["parameters"]
+        parameters, _ = _quick_parameters("etfs", stage, overrides)
+        assert {key: parameters[key] for key in expected} == expected
+        # The reduction survives _quick_parameters unchanged, and it is compared against what
+        # the notebook itself declares rather than against a copy of it written down here.
+        # Transcribing the value is what this test used to do and what the docstring above
+        # describes going wrong: the two notebooks no longer reduce identically - 10_dl_tsmixer
+        # dropped its max_symbols under ml4t/agent-workspace#988 - and a hardcoded mapping
+        # fails on the fixture rather than on the behaviour.
+        declared = overrides["PREVIEW_REDUCTIONS"]
+        assert parameters["PREVIEW_REDUCTIONS"] == declared
+        # A converted notebook that reduces nothing is a canonical run wearing the wrong tier,
+        # which the request builder refuses. That invariant is the part worth asserting.
+        assert declared, f"{stage} declares an empty PREVIEW_REDUCTIONS"
+        assert not {"MAX_SYMBOLS", "N_EPOCHS", "BATCH_SIZE", "LOOKBACK"} & set(overrides)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "09_dl_lstm",
+        "10_dl_tsmixer",
+        "09a_lstm",
+        "09b_patchtst",
+        "11b_ipca",
+        "11c_conditional_autoencoder",
+    ],
+)
+def test_a_registering_stage_is_recognised_by_its_suffix(stage: str) -> None:
+    """The six stages whose registration the entry-point assertion below covers.
+
+    This used to also assert a stage-to-entry-point mapping. The mapping is gone - every
+    notebook records its stem - so what is left to check is that the suffix is one the
+    registration assertion is reached for. A stage missing from ``_REGISTERING_SUFFIXES``
+    is skipped there rather than failed, which is the silence the assertion exists to break.
+    """
+    match = STAGE_RE.match(stage)
+    assert match is not None
+    assert stage[len(match.group(0)) :] in _REGISTERING_SUFFIXES
+
+
+# ---------------------------------------------------------------------------
+# Test collection
+# ---------------------------------------------------------------------------
+
+
+def _collect_model_notebooks() -> list[tuple[str, str, Path]]:
+    """Discover all model notebooks (stage >= 06) across case studies.
+
+    Returns (case_study, stage_stem, notebook_path) tuples in case-study and stage order,
+    with lettered producers before the bare aggregate for the same stage number.
+    """
+    tests = []
+    for cs in CASE_STUDIES:
+        cs_dir = PROD_CS_DIR / cs
+        if not cs_dir.exists():
+            continue
+        for notebook in sorted(cs_dir.glob("[0-9][0-9]*_*.py"), key=stage_sort_key):
+            if notebook.name.startswith("_"):
+                continue
+            match = STAGE_RE.match(notebook.name)
+            if not match:
+                continue
+            stage_num = int(match.group(1))
+            if stage_num < _MODEL_STAGE_MIN_BY_CASE.get(cs, _MODEL_STAGE_MIN):
+                continue
+            # Skip non-model notebooks (backtest, strategy, diagnostics)
+            suffix = notebook.stem[len(match.group(0)) :]
+            if suffix in _EXCLUDED_SUFFIXES:
+                continue
+            tests.append((cs, notebook.stem, notebook))
+    return tests
+
+
+MODEL_TESTS = _collect_model_notebooks()
+
+
+def test_collection_includes_us_firm_linear_stage() -> None:
+    assert any(
+        case_study == "us_firm_characteristics" and stage == "05_linear"
+        for case_study, stage, _ in MODEL_TESTS
+    )
+
+
+def test_lettered_producers_sort_before_the_stage_aggregate() -> None:
+    stages = [
+        stage
+        for case_study, stage, _ in MODEL_TESTS
+        if case_study == "sp500_equity_option_analytics" and stage.startswith("11")
+    ]
+
+    assert stages == [
+        "11a_pca",
+        "11b_ipca",
+        "11c_conditional_autoencoder",
+        "11d_stochastic_discount_factor",
+        "11e_supervised_autoencoder",
+        "11_latent_factors",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def isolated_model_output(tmp_path_factory):
+    """Create an isolated output directory with symlinked production data.
+
+    For each case study, symlinks read-only directories (config/, features/,
+    labels/) from the production case study directory so that model notebooks
+    can load upstream artifacts. Write-target directories (run_log/, results/,
+    models/) are NOT symlinked — they are created fresh by the notebooks.
+
+    Returns the temp root directory (passed as output_dir to run_notebook,
+    which sets ML4T_OUTPUT_DIR).
+    """
+    import shutil
+
+    test_root = tmp_path_factory.mktemp("model_registry_test")
+
+    for cs in CASE_STUDIES:
+        prod_cs = PROD_CS_DIR / cs
+        if not prod_cs.exists():
+            continue
+
+        test_cs = test_root / cs
+        test_cs.mkdir()
+
+        for subdir in _READ_ONLY_DIRS:
+            src = prod_cs / subdir
+            if src.exists():
+                (test_cs / subdir).symlink_to(src.resolve())
+
+    # Seed the global preset library (case_studies/config/{model_type}/*.yaml).
+    # load_configs() resolves presets at {case_dir.parent}/config/, which maps
+    # to test_root/config/ when ML4T_OUTPUT_DIR is set. Without this, every
+    # notebook that loads GBM/DL/TabDL/latent/causal presets fails.
+    global_config_src = PROD_CS_DIR / "config"
+    global_config_dst = test_root / "config"
+    if global_config_src.exists():
+        shutil.copytree(global_config_src, global_config_dst)
+        # Patch presets for minimal runtime (2 epochs, etc.)
+        from tests.conftest import _patch_presets_for_testing
+
+        _patch_presets_for_testing(global_config_dst)
+
+    return test_root
+
+
+def absent_read_only_inputs(case_study: str) -> list[str]:
+    """The read-only inputs ``isolated_model_output`` found nothing to symlink.
+
+    ``config/`` is tracked. ``features/`` and ``labels/`` are not: they are stage
+    01-05 output, and a maintainer worktree reaches them through
+    ``case_studies/<case study>/{features,labels}`` symlinks into
+    ``~/ml4t/artifacts``. A CI runner has none of those (they are gitignored) and
+    neither does a freshly created worktree, so the fixture links nothing and every
+    notebook fails on its first read with "Missing prerequisites".
+
+    That produced 94 failures naming the notebooks, none of which said anything
+    about a notebook, and a suite whose reds are all environmental is a suite nobody
+    reads. A missing input is a skip, and the skip names the exact directories so it
+    cannot be mistaken for the notebook working.
+    """
+    prod = PROD_CS_DIR / case_study
+    return sorted(subdir for subdir in ("features", "labels") if not (prod / subdir).exists())
+
+
+def test_absent_read_only_inputs_reports_only_what_is_missing(tmp_path, monkeypatch) -> None:
+    """Two-sided, because a skip that swallows a present input is worse than a red.
+
+    The failure this guards is a skip condition that is always true: it would turn
+    all 94 notebook executions green-by-absence and nothing would say so.
+    """
+    monkeypatch.setattr("tests.test_model_registry.PROD_CS_DIR", tmp_path)
+    case = tmp_path / "demo_case"
+    case.mkdir()
+    assert absent_read_only_inputs("demo_case") == ["features", "labels"]
+    (case / "features").mkdir()
+    assert absent_read_only_inputs("demo_case") == ["labels"]
+    (case / "labels").mkdir()
+    assert absent_read_only_inputs("demo_case") == []
+
+
+LOG_PATH = Path("/tmp/model_registry_test.log")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _init_log():
+    """Initialize the progress log and route Papermill cell output to it."""
+    import logging
+    import time
+
+    with open(LOG_PATH, "w") as f:
+        f.write(f"[{time.strftime('%H:%M:%S')}] === Model Registry Test Suite ===\n")
+        f.write(f"[{time.strftime('%H:%M:%S')}] {len(MODEL_TESTS)} tests collected\n")
+        f.flush()
+
+    # Route Papermill's cell-level progress + notebook print() output to log file.
+    # Papermill uses "papermill" logger (not "papermill.execute") for cell markers
+    # and captured output. We add a file handler so it goes to our log regardless
+    # of pytest's log level.
+    handler = logging.FileHandler(LOG_PATH)
+    handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
+    for logger_name in ("papermill", "papermill.execute"):
+        logger = logging.getLogger(logger_name)
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False  # Don't pollute pytest captured output
+
+
+# ---------------------------------------------------------------------------
+# Registry helpers
+# ---------------------------------------------------------------------------
+
+
+def _query_registry(db_path: Path, table: str, where: str = "") -> list[dict]:
+    """Query a registry table and return rows as dicts."""
+    if not db_path.exists():
+        return []
+    db = sqlite3.connect(str(db_path))
+    db.row_factory = sqlite3.Row
+    try:
+        sql = f"SELECT * FROM {table}"
+        if where:
+            sql += f" WHERE {where}"
+        return [dict(r) for r in db.execute(sql).fetchall()]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        db.close()
+
+
+def _registry_summary(db_path: Path) -> dict:
+    """Return a summary of registry contents for reporting."""
+    return {
+        "training_runs": len(_query_registry(db_path, "training_runs")),
+        "prediction_sets": len(_query_registry(db_path, "prediction_sets")),
+        "prediction_metrics": len(_query_registry(db_path, "prediction_metrics")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "case_study,stage,notebook_path",
+    MODEL_TESTS,
+    ids=[f"{cs}::{stage}" for cs, stage, _ in MODEL_TESTS],
+)
+def test_model_notebook(case_study, stage, notebook_path, isolated_model_output):
+    """Run a model notebook in isolation and verify registry output.
+
+    Steps:
+    1. Load per-notebook overrides (timeout, parameters, skip/gpu flags)
+    2. Merge with default reduced parameters (MAX_SYMBOLS=15, MAX_FOLDS=2)
+    3. Execute via Papermill with ML4T_OUTPUT_DIR → isolated temp dir
+    4. Assert successful completion
+    5. For notebooks with register=True, assert registry entries exist
+    """
+    # --- Skip / override handling ---
+    rel_path = notebook_path.relative_to(REPO_ROOT).with_suffix("")
+    overrides = get_overrides(str(rel_path))
+
+    if overrides.get("skip"):
+        pytest.skip(overrides.get("skip_reason", "marked skip in overrides"))
+
+    if absent := absent_read_only_inputs(case_study):
+        pytest.skip(
+            f"case_studies/{case_study}/ has no {', '.join(absent)} to read - stage 01-05 "
+            "output, which a maintainer worktree reaches through a symlink into "
+            "~/ml4t/artifacts and which no CI runner and no fresh worktree has"
+        )
+
+    reason = gpu_skip_reason(overrides)
+    if reason:
+        pytest.skip(reason)
+
+    # --- Parameters ---
+    # Start with quick defaults, then retain notebook-specific reduced settings.
+    # Some notebooks need wider cross-sections or longer windows for their
+    # reduced path to remain scientifically valid.
+    # Papermill warns (but doesn't error) about unknown parameters, so it's
+    # safe to inject all of them even if the notebook doesn't use them all.
+    parameters, suffix_p = _quick_parameters(
+        case_study,
+        stage,
+        overrides.get("parameters", {}),
+    )
+
+    default_timeout = 600 if suffix_p in _LATENT_FACTOR_SUFFIXES else 300
+    timeout = overrides.get("timeout", default_timeout)
+
+    # --- Snapshot registry state before run ---
+    # Resolved through the harness rather than named here: `research_preview=True` below
+    # puts a migrated Study notebook on the preview tier, which writes under
+    # `<workspace>/.preview`. Naming the canonical path in this file snapshotted and
+    # queried a database the run never opened, and the empty result surfaced as
+    # "found no training run with entry_point=..." on notebooks that had registered
+    # everything they were asked to.
+    registry_db = resolved_registry_path(
+        notebook_path, isolated_model_output, case_study, research_preview=True
+    )
+    before = _registry_summary(registry_db)
+
+    # --- Execute ---
+    result = run_notebook(
+        py_path=notebook_path,
+        parameters=parameters,
+        timeout=timeout,
+        output_dir=isolated_model_output,
+        log_path=LOG_PATH,
+        research_preview=True,
+    )
+
+    assert result["status"] == "ok", (
+        f"\n{'=' * 70}\nFAILED: {case_study}::{stage}\n{'=' * 70}\n{result['error']}\n{'=' * 70}"
+    )
+
+    # --- Registry assertions (for notebooks that register) ---
+    after = _registry_summary(registry_db)
+
+    # Check if this notebook is expected to register (match on suffix)
+    stage_match = STAGE_RE.match(stage)
+    suffix = stage[len(stage_match.group(0)) :] if stage_match else stage
+    expects_registration = suffix in _REGISTERING_SUFFIXES
+
+    if expects_registration:
+        new_training = after["training_runs"] - before["training_runs"]
+        new_predictions = after["prediction_sets"] - before["prediction_sets"]
+
+        # Check for new entries OR updated entries (upserts).
+        # Some notebooks (e.g. 12_pca) re-register configs that were
+        # already created by an earlier notebook (11_latent_factors),
+        # resulting in upserts with 0 net new rows but updated entry_points.
+        # Two fields, because the corpus is mid-migration and they answer the same question on
+        # different paths.
+        #
+        # An unmigrated notebook owns its runner and passes its own stem, which lands in
+        # `entry_point`. A migrated one goes through a shared family runner, so `entry_point`
+        # records the module - `case_studies.utils.linear`, `case_studies.utils.latent_factors` -
+        # which is true, is what a reader needs to find the code, and is legitimately shared by
+        # several notebooks. Asserting the stem against it worked only while every notebook had its
+        # own runner, and went silently red for every migrated notebook in every case study the
+        # moment that stopped being so. `notebook_path` is the field whose name already answers
+        # "which notebook", and the migrated path now fills it.
+        #
+        # Accepting either keeps the check meaningful on both paths during the migration rather
+        # than turning the unmigrated notebooks red to make the migrated ones green.
+        #
+        # WHICH HALF SURVIVES WAS SETTLED 2026-08-25, and it is `entry_point` carrying the
+        # notebook stem: the migrated family runners write the stem there rather than the
+        # module, and the run-log reset refills the column. So the half to drop when the last
+        # notebook migrates is the `json_extract(runtime_json, ...)` one, not `entry_point`.
+        #
+        # An earlier version of this comment said the opposite, on the reasoning that
+        # `notebook_path` is the field whose name answers "which notebook". The decision went
+        # the other way because two fields answering one question is the defect, whichever name
+        # reads better: `entry_point` is a column, so a query does not have to reach into a JSON
+        # blob for it, and keeping both would leave the JSON field authoritative for migrated
+        # producers and the column authoritative for unmigrated ones - a split that outlives
+        # everyone who remembers why.
+        #
+        # Until then BOTH halves stay. Asserting `entry_point` alone is what went silently red
+        # for every migrated notebook in every case study, and this corpus is still mid-migration:
+        # measured on us_firm_characteristics, all 141 training rows carry a NULL `entry_point`
+        # while 37 already carry the stem in `runtime_json.notebook_path`.
+        #
+        # A CI fixture registry and a production registry will disagree on `entry_point`
+        # indefinitely, and neither is broken. The code fix does not backfill - a re-run whose
+        # fits identity-skip writes no new rows, so pre-fix rows keep their NULL - and only the
+        # run-log reset refills the column. A fixture is regenerated and sees the value; a
+        # production registry carries rows from both sides of the fix. Anyone querying this
+        # field has to know which of the two they are holding.
+        #
+        # `json_extract` rather than a column: `notebook_path` is provenance, it lives in
+        # `runtime_json`, and `registry/specs.py:_V2_PROVENANCE_FIELDS` keeps it out of the
+        # training identity - so recording it moves no hash.
+        # A missing registry fails here rather than reading as an empty result set, which is the
+        # same rule as the assertion below: silence must not be indistinguishable from a pass.
+        assert registry_db.exists(), (
+            f"{case_study}::{stage} expects to register but wrote no registry under "
+            f"{isolated_model_output}"
+        )
+        expected_notebook = stage
+        runs = _query_registry(
+            registry_db,
+            "training_runs",
+            f"json_extract(runtime_json, '$.notebook_path') = '{expected_notebook}' "
+            f"OR entry_point = '{expected_notebook}'",
+        )
+        # Fails rather than skips when neither field names the notebook. An unset provenance field
+        # reading as "not checked" is how the entry_point half of this hid through an entire
+        # migration, and the point of the assertion is to catch a notebook whose registration
+        # silently stopped.
+        assert runs, (
+            f"{case_study}::{stage} registered no training run naming itself: no row has "
+            f"runtime_provenance['notebook_path'] or entry_point equal to '{expected_notebook}'"
+        )
+
+        if new_training > 0:
+            assert new_predictions > 0, (
+                f"{case_study}::{stage} created {new_training} training_runs "
+                f"but 0 new prediction_sets"
+            )
+            print(
+                f"\n  Registry OK: +{new_training} training_runs, "
+                f"+{new_predictions} prediction_sets"
+            )
+
+            if case_study == "etfs" and notebook_path.stem == "09_dl_lstm":
+                db = sqlite3.connect(str(registry_db))
+                try:
+                    checkpoints = {
+                        row[0]
+                        for row in db.execute(
+                            """
+                            SELECT ps.checkpoint_value
+                            FROM prediction_sets ps
+                            JOIN training_runs tr USING (training_hash)
+                            WHERE tr.entry_point = '09_dl_lstm'
+                              AND ps.split = 'validation'
+                            """
+                        )
+                    }
+                finally:
+                    db.close()
+                assert {5, 6}.issubset(checkpoints), checkpoints
+            # `10_dl_tsmixer`, not `dl_tsmixer`. The family name was what the runner wrote
+            # before the migration; the notebook now declares `entry_point="10_dl_tsmixer"` to
+            # `open_study`, which is the stem every registering notebook records per
+            # `test_a_registering_stage_is_recognised_by_its_suffix` above. The literal survived
+            # the mapping's removal unchanged, and nothing caught it because this test runs in
+            # no job and cannot: it skips above without the stage 01-05 inputs no runner has,
+            # so `.github/ci/unit-test-quarantine.txt` deselects it rather than leaving every
+            # parametrization to skip. Measured 2026-09-12 against the etfs production
+            # registry - 2 rows at `10_dl_tsmixer`, 0 at `dl_tsmixer` - so the query returned
+            # the empty set and the `issubset` below could only have failed, on the first
+            # machine that ever ran it.
+            if case_study == "etfs" and notebook_path.stem == "10_dl_tsmixer":
+                db = sqlite3.connect(str(registry_db))
+                try:
+                    checkpoints = {
+                        row[0]
+                        for row in db.execute(
+                            """
+                            SELECT ps.checkpoint_value
+                            FROM prediction_sets ps
+                            JOIN training_runs tr USING (training_hash)
+                            WHERE tr.entry_point = '10_dl_tsmixer'
+                              AND ps.split = 'validation'
+                            """
+                        )
+                    }
+                finally:
+                    db.close()
+                assert {1, 2}.issubset(checkpoints), checkpoints
+        else:
+            print(
+                f"\n  Registry OK: {len(runs)} training_runs naming "
+                f"'{expected_notebook}' (upserted, no net new rows)"
+            )
+    else:
+        # Non-registering notebook — just report what happened
+        new_training = after["training_runs"] - before["training_runs"]
+        if new_training > 0:
+            print(
+                f"\n  Note: {stage} created {new_training} training_runs "
+                f"(not in _REGISTERING_NOTEBOOKS set — consider adding)"
+            )
+        else:
+            print("\n  OK (no registry writes expected)")

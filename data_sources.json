@@ -1,0 +1,112 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-10-12",
+  "description": "Centralized Data Source Registry & Download Mirrors for dataBaseLake",
+  "mirrors": {
+    "huggingface_global": "https://huggingface.co",
+    "huggingface_china_mirror": "https://hf-mirror.com",
+    "cryptodatadownload": "https://www.cryptodatadownload.com",
+    "github": "https://github.com"
+  },
+  "datasets": [
+    {
+      "id": "hf_mito0o852_ohlcv1m",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/huggingface/mito0o852_OHLCV-1m",
+      "source_type": "huggingface",
+      "repo_id": "mito0o852/OHLCV-1m",
+      "size_approx_gb": 81.7,
+      "description": "Full historical 1-minute OHLCV data across global liquid assets (1992-2026)",
+      "format": "parquet",
+      "restore_command": "python bootstrap_lake.py --dataset hf_mito0o852_ohlcv1m"
+    },
+    {
+      "id": "hf_123olp_binance_futures",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/huggingface/123olp_binance-futures-ohlcv-2018-2026",
+      "source_type": "huggingface",
+      "repo_id": "123olp/binance-futures-ohlcv-2018-2026",
+      "size_approx_gb": 16.1,
+      "description": "Binance Futures official 1m candles and 5m market metrics (2018-2026)",
+      "format": "csv.gz / bin.zst",
+      "restore_command": "python bootstrap_lake.py --dataset hf_123olp_binance_futures"
+    },
+    {
+      "id": "hf_twelvedata_fwm",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/huggingface/twelvedata_financial-world-model",
+      "source_type": "huggingface",
+      "repo_id": "twelvedata/financial-world-model",
+      "size_approx_gb": 47.2,
+      "description": "Multi-modal multi-frequency financial trajectories, 1min/1hour/1day bars",
+      "format": "parquet / jsonl",
+      "restore_command": "python bootstrap_lake.py --dataset hf_twelvedata_fwm"
+    },
+    {
+      "id": "hf_omchoksi108_cloud_lake",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/huggingface/OMCHOKSI108_my-cloud-data-lake",
+      "source_type": "huggingface",
+      "repo_id": "OMCHOKSI108/my-cloud-data-lake",
+      "size_approx_gb": 4.3,
+      "description": "Cloud multi-asset financial data lake",
+      "format": "parquet / csv",
+      "restore_command": "python bootstrap_lake.py --dataset hf_omchoksi108_cloud_lake"
+    },
+    {
+      "id": "hf_yifishbossman",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/huggingface/yifishbossman",
+      "source_type": "huggingface",
+      "repo_id": "yifishbossman/financial-analyst-data",
+      "size_approx_gb": 2.8,
+      "description": "Financial analyst fundamental and technical indicators dataset",
+      "format": "zip / parquet",
+      "restore_command": "python bootstrap_lake.py --dataset hf_yifishbossman"
+    },
+    {
+      "id": "hf_zoanana990_qtrade",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/huggingface/zoanana990_qtrade-financial-data",
+      "source_type": "huggingface",
+      "repo_id": "zoanana990/qtrade-financial-data",
+      "size_approx_gb": 0.5,
+      "description": "QTrade consolidated stock databases",
+      "format": "db.gz",
+      "restore_command": "python bootstrap_lake.py --dataset hf_zoanana990_qtrade"
+    },
+    {
+      "id": "cdd_all_exchanges",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/cryptodatadownload",
+      "source_type": "direct_web",
+      "url": "https://www.cryptodatadownload.com/data/",
+      "size_approx_gb": 4.4,
+      "description": "CryptoDataDownload full historical daily and hourly CSV files across 7 exchanges",
+      "format": "csv",
+      "restore_command": "python bootstrap_lake.py --dataset cdd_all_exchanges"
+    },
+    {
+      "id": "gh_getdata_finance",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/github/getdata-finance",
+      "source_type": "github",
+      "url": "https://github.com/getdata-finance",
+      "size_approx_gb": 3.0,
+      "description": "High-resolution OHLCV series for US equities, FX pairs, indices, commodities",
+      "format": "parquet / csv",
+      "restore_command": "python bootstrap_lake.py --dataset gh_getdata_finance"
+    },
+    {
+      "id": "kaggle_quandl_wiki",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/kaggle/quandl-wiki-prices-us-equities",
+      "source_type": "kaggle",
+      "kaggle_dataset": "quandl/wiki-prices-us-equities",
+      "size_approx_gb": 1.7,
+      "description": "Quandl WIKI 3,000+ US equities full daily history adjusted prices",
+      "format": "csv",
+      "restore_command": "python bootstrap_lake.py --dataset kaggle_quandl_wiki"
+    }
+  ]
+}

@@ -1,0 +1,215 @@
+{
+  "repo": "https://github.com/cenkcorapci/download-lots-of-financial-data",
+  "total_files": 52,
+  "total_size_bytes": 128472,
+  "files": [
+    {
+      "file": "requirements.txt",
+      "size_bytes": 216
+    },
+    {
+      "file": "README.md",
+      "size_bytes": 1984
+    },
+    {
+      "file": "Makefile",
+      "size_bytes": 644
+    },
+    {
+      "file": "LICENSE",
+      "size_bytes": 1061
+    },
+    {
+      "file": ".gitignore",
+      "size_bytes": 4733
+    },
+    {
+      "file": "scripts/verify_datasets.py",
+      "size_bytes": 1743
+    },
+    {
+      "file": "scripts/download_all.py",
+      "size_bytes": 1798
+    },
+    {
+      "file": "scripts/lib/readme.py",
+      "size_bytes": 1903
+    },
+    {
+      "file": "scripts/lib/notebook.py",
+      "size_bytes": 3100
+    },
+    {
+      "file": "scripts/lib/manifest.py",
+      "size_bytes": 1571
+    },
+    {
+      "file": "scripts/lib/base.py",
+      "size_bytes": 3809
+    },
+    {
+      "file": "scripts/lib/__init__.py",
+      "size_bytes": 260
+    },
+    {
+      "file": "scripts/downloaders/stocks.py",
+      "size_bytes": 7750
+    },
+    {
+      "file": "scripts/downloaders/registry.py",
+      "size_bytes": 816
+    },
+    {
+      "file": "scripts/downloaders/polymarket.py",
+      "size_bytes": 3505
+    },
+    {
+      "file": "scripts/downloaders/news.py",
+      "size_bytes": 4618
+    },
+    {
+      "file": "scripts/downloaders/macro.py",
+      "size_bytes": 5601
+    },
+    {
+      "file": "scripts/downloaders/kaggle_hf.py",
+      "size_bytes": 8553
+    },
+    {
+      "file": "scripts/downloaders/forex.py",
+      "size_bytes": 2621
+    },
+    {
+      "file": "scripts/downloaders/crypto.py",
+      "size_bytes": 5881
+    },
+    {
+      "file": "scripts/downloaders/company.py",
+      "size_bytes": 5138
+    },
+    {
+      "file": "scripts/downloaders/__init__.py",
+      "size_bytes": 52
+    },
+    {
+      "file": "docs/PROCESS.md",
+      "size_bytes": 3376
+    },
+    {
+      "file": ".git/index",
+      "size_bytes": 2233
+    },
+    {
+      "file": ".git/config",
+      "size_bytes": 289
+    },
+    {
+      "file": ".git/HEAD",
+      "size_bytes": 21
+    },
+    {
+      "file": ".git/packed-refs",
+      "size_bytes": 112
+    },
+    {
+      "file": ".git/shallow",
+      "size_bytes": 41
+    },
+    {
+      "file": ".git/description",
+      "size_bytes": 73
+    },
+    {
+      "file": ".git/logs/HEAD",
+      "size_bytes": 204
+    },
+    {
+      "file": ".git/logs/refs/heads/main",
+      "size_bytes": 204
+    },
+    {
+      "file": ".git/logs/refs/remotes/origin/HEAD",
+      "size_bytes": 204
+    },
+    {
+      "file": ".git/refs/remotes/origin/HEAD",
+      "size_bytes": 30
+    },
+    {
+      "file": ".git/refs/heads/main",
+      "size_bytes": 41
+    },
+    {
+      "file": ".git/objects/pack/pack-15743f169b746b56b0e656d86dff50bc98d19a5e.idx",
+      "size_bytes": 1884
+    },
+    {
+      "file": ".git/objects/pack/pack-15743f169b746b56b0e656d86dff50bc98d19a5e.rev",
+      "size_bytes": 168
+    },
+    {
+      "file": ".git/objects/pack/pack-15743f169b746b56b0e656d86dff50bc98d19a5e.pack",
+      "size_bytes": 26168
+    },
+    {
+      "file": ".git/info/exclude",
+      "size_bytes": 240
+    },
+    {
+      "file": ".git/hooks/fsmonitor-watchman.sample",
+      "size_bytes": 4726
+    },
+    {
+      "file": ".git/hooks/post-update.sample",
+      "size_bytes": 189
+    },
+    {
+      "file": ".git/hooks/push-to-checkout.sample",
+      "size_bytes": 2783
+    },
+    {
+      "file": ".git/hooks/sendemail-validate.sample",
+      "size_bytes": 2308
+    },
+    {
+      "file": ".git/hooks/pre-merge-commit.sample",
+      "size_bytes": 416
+    },
+    {
+      "file": ".git/hooks/pre-commit.sample",
+      "size_bytes": 1649
+    },
+    {
+      "file": ".git/hooks/applypatch-msg.sample",
+      "size_bytes": 478
+    },
+    {
+      "file": ".git/hooks/pre-push.sample",
+      "size_bytes": 1374
+    },
+    {
+      "file": ".git/hooks/commit-msg.sample",
+      "size_bytes": 896
+    },
+    {
+      "file": ".git/hooks/pre-applypatch.sample",
+      "size_bytes": 424
+    },
+    {
+      "file": ".git/hooks/pre-receive.sample",
+      "size_bytes": 544
+    },
+    {
+      "file": ".git/hooks/update.sample",
+      "size_bytes": 3650
+    },
+    {
+      "file": ".git/hooks/prepare-commit-msg.sample",
+      "size_bytes": 1492
+    },
+    {
+      "file": ".git/hooks/pre-rebase.sample",
+      "size_bytes": 4898
+    }
+  ]
+}

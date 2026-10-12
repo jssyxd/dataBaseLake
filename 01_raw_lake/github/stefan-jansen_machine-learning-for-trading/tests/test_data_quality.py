@@ -1,0 +1,423 @@
+"""Tests for utils/data_quality.py.
+
+Pins:
+- apply_max_symbols: the one entity-reduction rule (most-observed, ties by name)
+  and its edge cases. Called by every loader, and reached from the modelling side
+  by utils.modeling.reduce_to_top_entities, so a producer and a consumer reducing
+  the same panel to the same size get the same universe. When it was a seeded
+  random sample the two disagreed: on nasdaq100_microstructure's fixture the labels
+  covered {AAPL, AMD, CMCSA, CSCO, SIRI} and the temporal features
+  {AAPL, AMD, AMZN, FB, TSLA}.
+- check_ohlc_invariants: correct detection of OHLC violations, graceful
+  handling of null values (TAQ no-trade bars), and missing-column tolerance.
+"""
+
+from __future__ import annotations
+
+import math
+
+import polars as pl
+import pytest
+
+from utils.data_quality import (
+    apply_max_symbols,
+    check_ohlc_invariants,
+    describe_coverage,
+    null_rate,
+    validate_features,
+    validate_modeling_inputs,
+)
+
+
+def _make_prices(symbols: list[str], n_rows: int = 3) -> pl.DataFrame:
+    rows = []
+    for s in symbols:
+        for i in range(n_rows):
+            rows.append(
+                {
+                    "symbol": s,
+                    "timestamp": f"2024-01-{i + 1:02d}",
+                    "open": 100.0 + i,
+                    "high": 105.0 + i,
+                    "low": 95.0 + i,
+                    "close": 102.0 + i,
+                    "volume": 1_000 * (i + 1),
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+# -----------------------------------------------------------------------------
+# apply_max_symbols
+# -----------------------------------------------------------------------------
+
+
+def test_apply_max_symbols_zero_is_passthrough() -> None:
+    df = _make_prices(["A", "B", "C"])
+    out = apply_max_symbols(df, 0)
+    assert out.equals(df)
+
+
+def test_apply_max_symbols_negative_is_passthrough() -> None:
+    df = _make_prices(["A", "B", "C"])
+    out = apply_max_symbols(df, -1)
+    assert out.equals(df)
+
+
+def test_apply_max_symbols_exceeds_universe_is_passthrough() -> None:
+    df = _make_prices(["A", "B"])
+    out = apply_max_symbols(df, 10)
+    assert out.equals(df)
+
+
+def test_apply_max_symbols_keeps_the_requested_count() -> None:
+    df = _make_prices(["A", "B", "C", "D", "E"])
+    out = apply_max_symbols(df, 3)
+    assert out["symbol"].n_unique() == 3
+
+
+def test_apply_max_symbols_keeps_the_most_observed() -> None:
+    """The rule itself: history, not a draw."""
+    df = pl.concat(
+        [
+            _make_prices(["A"], n_rows=1),
+            _make_prices(["B"], n_rows=5),
+            _make_prices(["C"], n_rows=3),
+        ]
+    )
+    assert sorted(apply_max_symbols(df, 2)["symbol"].unique().to_list()) == ["B", "C"]
+
+
+def test_apply_max_symbols_breaks_a_tie_on_the_entity_name() -> None:
+    """Equal row counts are common - twelve nasdaq fixture symbols, five tied.
+
+    Without the tie break the answer comes out of frame order, so two callers
+    reducing the same panel to the same size can pick different symbols.
+    """
+    df = _make_prices(["D", "C", "B", "A"], n_rows=4)
+    assert sorted(apply_max_symbols(df, 2)["symbol"].unique().to_list()) == ["A", "B"]
+
+
+def test_apply_max_symbols_preserves_all_rows_per_symbol() -> None:
+    df = _make_prices(["A", "B", "C", "D"], n_rows=5)
+    out = apply_max_symbols(df, 2)
+    # Each selected symbol should keep all its rows (function filters by symbol set)
+    per_symbol = out.group_by("symbol").len()
+    assert per_symbol["len"].to_list() == [5, 5]
+
+
+def test_apply_max_symbols_is_invariant_to_input_order() -> None:
+    """Parquet partition order must not perturb the selection."""
+    df_asc = _make_prices(["A", "B", "C", "D", "E"])
+    df_desc = df_asc.sort("symbol", descending=True)
+
+    s1 = apply_max_symbols(df_asc, 2)["symbol"].unique().sort().to_list()
+    s2 = apply_max_symbols(df_desc, 2)["symbol"].unique().sort().to_list()
+    assert s1 == s2
+
+
+def test_apply_max_symbols_reduces_a_lazyframe_the_same_way() -> None:
+    """Every loader passing include_microstructure=True reduces lazily."""
+    df = pl.concat(
+        [
+            _make_prices(["A"], n_rows=1),
+            _make_prices(["B"], n_rows=5),
+            _make_prices(["C"], n_rows=3),
+        ]
+    )
+    eager = apply_max_symbols(df, 2)["symbol"].unique().sort().to_list()
+    lazy = apply_max_symbols(df.lazy(), 2).collect()["symbol"].unique().sort().to_list()
+    assert eager == lazy == ["B", "C"]
+
+
+def test_the_loader_and_the_modelling_side_choose_the_same_universe() -> None:
+    """The coverage assertion the split was missing: same set, not same count.
+
+    A consumer symbol the producer never covered joins to null features and the
+    notebook runs clean on a wrong answer, which is why this is a set comparison.
+    """
+    from utils.modeling import reduce_to_top_entities
+
+    df = _make_prices(["A", "B", "C", "D", "E", "F"], n_rows=4)
+    # Give three symbols more history so the choice is not the whole universe.
+    df = pl.concat([df, _make_prices(["B", "D", "F"], n_rows=3)])
+
+    producer = set(apply_max_symbols(df, 3)["symbol"].unique().to_list())
+    consumer = set(reduce_to_top_entities(df, "symbol", 3)["symbol"].unique().to_list())
+    assert producer == consumer == {"B", "D", "F"}
+
+
+def test_apply_max_symbols_custom_symbol_col() -> None:
+    df = pl.DataFrame({"product": ["X", "Y", "Z"], "value": [1, 2, 3]})
+    out = apply_max_symbols(df, 2, symbol_col="product")
+    assert out["product"].n_unique() == 2
+
+
+def test_apply_max_symbols_with_lazyframe_returns_lazyframe() -> None:
+    df = _make_prices(["A", "B", "C", "D"])
+    lf = df.lazy()
+    out = apply_max_symbols(lf, 2)
+    assert isinstance(out, pl.LazyFrame)
+    assert out.collect()["symbol"].n_unique() == 2
+
+
+# -----------------------------------------------------------------------------
+# check_ohlc_invariants
+# -----------------------------------------------------------------------------
+
+
+def test_check_ohlc_invariants_clean_data_is_100_percent() -> None:
+    df = _make_prices(["A"], n_rows=5)
+    invariants = check_ohlc_invariants(df)
+    # 6 checks expected: high_gte_low/open/close, low_lte_open/close, volume_non_negative
+    assert invariants.height == 6
+    assert (invariants["valid_pct"] == 100.0).all()
+
+
+def test_check_ohlc_invariants_detects_high_below_low() -> None:
+    df = pl.DataFrame(
+        {
+            "open": [100.0, 100.0],
+            "high": [99.0, 105.0],  # first row violates high >= low
+            "low": [100.0, 95.0],
+            "close": [99.5, 102.0],
+            "volume": [1_000, 1_000],
+        }
+    )
+    invariants = check_ohlc_invariants(df)
+    row = invariants.filter(pl.col("check") == "high_gte_low").row(0, named=True)
+    assert row["valid_pct"] == 50.0
+    assert row["applicable_rows"] == 2
+
+
+def test_check_ohlc_invariants_ignores_null_rows() -> None:
+    """Rows where any required col is null are excluded from the percentage."""
+    df = pl.DataFrame(
+        {
+            "open": [100.0, None, 100.0],
+            "high": [105.0, None, 102.0],
+            "low": [95.0, None, 95.0],
+            "close": [101.0, None, 101.0],
+            "volume": [1_000, 1_000, 1_000],
+        }
+    )
+    invariants = check_ohlc_invariants(df)
+    row = invariants.filter(pl.col("check") == "high_gte_low").row(0, named=True)
+    assert row["applicable_rows"] == 2  # 3 rows, 1 excluded for nulls
+    assert row["valid_pct"] == 100.0
+
+
+def test_check_ohlc_invariants_detects_negative_volume() -> None:
+    df = pl.DataFrame(
+        {
+            "open": [100.0],
+            "high": [105.0],
+            "low": [95.0],
+            "close": [101.0],
+            "volume": [-5],
+        }
+    )
+    invariants = check_ohlc_invariants(df)
+    row = invariants.filter(pl.col("check") == "volume_non_negative").row(0, named=True)
+    assert row["valid_pct"] == 0.0
+
+
+def test_check_ohlc_invariants_omits_volume_when_missing() -> None:
+    df = pl.DataFrame({"open": [100.0], "high": [105.0], "low": [95.0], "close": [101.0]})
+    invariants = check_ohlc_invariants(df)
+    assert "volume_non_negative" not in invariants["check"].to_list()
+    assert invariants.height == 5  # 5 price checks, no volume check
+
+
+def test_check_ohlc_invariants_empty_df_returns_empty_result() -> None:
+    df = pl.DataFrame({"x": []})
+    invariants = check_ohlc_invariants(df)
+    assert invariants.height == 0
+
+
+# -----------------------------------------------------------------------------
+# Smaller coverage helpers
+# -----------------------------------------------------------------------------
+
+
+def test_describe_coverage_basic_shape() -> None:
+    df = _make_prices(["A", "B"], n_rows=3)
+    cov = describe_coverage(df)
+    assert cov["rows"] == 6
+    assert cov["assets"] == 2
+    assert cov["unique_times"] == 3
+
+
+def test_null_rate_reports_per_column() -> None:
+    df = pl.DataFrame({"a": [1, None, 3], "b": [None, None, 3]})
+    rates = null_rate(df)
+    by_col = dict(zip(rates["column"], rates["null_pct"], strict=True))
+    # 1/3 ≈ 33.33 for a, 2/3 ≈ 66.66 for b
+    assert round(by_col["a"], 2) == 33.33
+    assert round(by_col["b"], 2) == 66.67
+
+
+# -----------------------------------------------------------------------------
+# validate_features
+# -----------------------------------------------------------------------------
+
+
+def test_validate_features_warm_up_nan_is_not_an_extreme_value() -> None:
+    # The head every rolling window leaves, on a quantity bounded well below the
+    # threshold. Polars evaluates NaN > x as True, so this was reported as extreme.
+    entropy = pl.DataFrame({"fft_spectral_entropy": [float("nan")] * 4 + [4.7, 4.6]})
+    assert validate_features(entropy, ["fft_spectral_entropy"]) == []
+
+
+def test_validate_features_still_reports_a_genuine_extreme_beside_a_nan_head() -> None:
+    df = pl.DataFrame({"f": [float("nan"), 1.0, 5e6]})
+    (issue,) = validate_features(df, ["f"])
+    assert "f(1)" in issue and "|x| >" in issue
+
+
+def test_validate_features_reports_an_all_nan_column_as_carrying_no_value() -> None:
+    df = pl.DataFrame({"f": [float("nan"), float("nan")]})
+    (issue,) = validate_features(df, ["f"])
+    assert "carry no value" in issue and "'f'" in issue
+
+
+def test_validate_features_reports_an_all_null_column_as_carrying_no_value() -> None:
+    df = pl.DataFrame({"f": [None, None]}, schema={"f": pl.Float64})
+    (issue,) = validate_features(df, ["f"])
+    assert "carry no value" in issue
+
+
+def test_validate_features_reports_infinities_separately_from_nan() -> None:
+    df = pl.DataFrame({"f": [float("nan"), float("inf"), 1.0]})
+    (issue,) = validate_features(df, ["f"])
+    assert issue.startswith("CRITICAL") and "f(1)" in issue
+
+
+def test_validate_features_handles_an_integer_column() -> None:
+    # is_nan and is_infinite are undefined on an integer series.
+    df = pl.DataFrame({"f": [1, 2, 3]})
+    assert validate_features(df, ["f"]) == []
+    assert validate_features(pl.DataFrame({"f": [1, 2 * 10**9]}), ["f"], max_abs_value=1e6) != []
+
+
+def test_validate_features_refuses_a_column_the_frame_does_not_have() -> None:
+    with pytest.raises(ValueError, match="cannot find 1 of the 1 columns"):
+        validate_features(pl.DataFrame({"a": [1.0]}), ["absent"])
+
+
+def test_validate_features_refuses_an_empty_column_list() -> None:
+    with pytest.raises(ValueError, match="no columns to check"):
+        validate_features(pl.DataFrame({"a": [1.0]}), [])
+
+
+def test_validate_features_allow_missing_reports_the_skipped_names_rather_than_hiding_them() -> (
+    None
+):
+    issues = validate_features(pl.DataFrame({"a": [1.0]}), ["a", "absent"], allow_missing=True)
+    (issue,) = issues
+    assert issue.startswith("WARNING") and "1 of 2" in issue and "absent" in issue
+
+
+def test_the_gate_refuses_a_feature_frame_that_holds_none_of_the_columns_named() -> None:
+    """The nasdaq100_microstructure/05 shape: the financial frame, the model-based names.
+
+    Two artifacts share a key and are joined further down the notebook, so the
+    column list and the frame both exist and neither looks wrong on its own. Every
+    name was skipped and the gate printed ALL CLEAR over nothing.
+    """
+    keys = {"timestamp": [1, 2], "symbol": ["A", "B"]}
+    financial = pl.DataFrame({**keys, "ret_5m": [0.01, -0.02], "spread": [0.3, 0.4]})
+    model_based = pl.DataFrame({**keys, "regime_prob": [0.7, 0.2], "ffd_close": [1.5, 1.6]})
+    labels = pl.DataFrame({**keys, "fwd_ret_15m": [0.01, -0.01]})
+    model_based_cols = [c for c in model_based.columns if c not in keys]
+
+    with pytest.raises(ValueError, match="cannot find 2 of the 2 columns"):
+        validate_modeling_inputs(
+            features_df=financial,
+            label_df=labels,
+            feature_cols=model_based_cols,
+            label_col="fwd_ret_15m",
+        )
+
+    # Against the frame those names come from it passes, and it reads a value:
+    # an infinity in a model-based column is what the gate is there to stop.
+    assert (
+        validate_modeling_inputs(
+            features_df=model_based,
+            label_df=labels,
+            feature_cols=model_based_cols,
+            label_col="fwd_ret_15m",
+        )["n_critical"]
+        == 0
+    )
+
+    broken = model_based.with_columns(pl.Series("regime_prob", [float("inf"), 0.2]))
+    with pytest.raises(ValueError, match="critical issues"):
+        validate_modeling_inputs(
+            features_df=broken,
+            label_df=labels,
+            feature_cols=model_based_cols,
+            label_col="fwd_ret_15m",
+        )
+
+
+def test_check_ohlc_invariants_tolerates_adjustment_rounding() -> None:
+    """A high that IS the close, one ulp below it, is not a violation.
+
+    An adjusted panel applies its cumulative ratio to each field separately, so the
+    two products can differ in the last bit even though the bar's high and close are
+    the same price. The strict comparison this replaced reported 760 such rows on the
+    ETF panel, all with a breach smaller than one float64 epsilon of the close.
+    """
+    close = 862.5 * 0.9873456789
+    high = math.nextafter(close, 0.0)  # one ulp below: the same price, rounded apart
+    assert high < close, "the fixture must actually breach a strict comparison"
+
+    df = pl.DataFrame(
+        {
+            "open": [close],
+            "high": [high],
+            "low": [math.nextafter(close, 0.0)],
+            "close": [close],
+            "volume": [1_000],
+        }
+    )
+    invariants = check_ohlc_invariants(df)
+    assert (invariants["valid_pct"] == 100.0).all()
+
+
+def test_check_ohlc_invariants_rtol_zero_restores_strict_comparison() -> None:
+    """The tolerance is what admits the ulp, not some other leniency in the check.
+
+    Without this, the test above would still pass if the comparison had been changed
+    to something that never fails, and nothing would say so.
+    """
+    close = 862.5 * 0.9873456789
+    df = pl.DataFrame(
+        {
+            "open": [close],
+            "high": [math.nextafter(close, 0.0)],
+            "low": [close],
+            "close": [close],
+            "volume": [1_000],
+        }
+    )
+    strict = check_ohlc_invariants(df, rtol=0.0)
+    row = strict.filter(pl.col("check") == "high_gte_close").row(0, named=True)
+    assert row["valid_pct"] == 0.0
+
+
+def test_check_ohlc_invariants_still_detects_a_real_violation() -> None:
+    """One cent on a $100 bar is 1e-4 relative, eleven orders above the tolerance."""
+    df = pl.DataFrame(
+        {
+            "open": [100.0],
+            "high": [99.99],  # a cent below the close: a genuine defect
+            "low": [99.0],
+            "close": [100.0],
+            "volume": [1_000],
+        }
+    )
+    invariants = check_ohlc_invariants(df)
+    row = invariants.filter(pl.col("check") == "high_gte_close").row(0, named=True)
+    assert row["valid_pct"] == 0.0

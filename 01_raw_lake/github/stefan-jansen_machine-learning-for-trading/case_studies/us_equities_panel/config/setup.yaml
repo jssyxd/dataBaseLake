@@ -1,0 +1,289 @@
+strategy_id: us_equities_panel
+setup_version: v1
+
+decision:
+  cadence: daily_close
+  snapshot: close
+  execution_delay: next_bar_open
+
+universe:
+  n_assets: 3199
+
+# Engine-level execution defaults. Single source of truth — Ch16-19 notebooks
+# read these via get_backtest_config(); never declare a local INITIAL_CASH
+# or share_type constant. Changing values here invalidates every existing
+# backtest_hash for this case study.
+#
+# Spec-hash inputs (each invalidates every backtest_hash on change):
+#   - execution.initial_cash
+#   - execution.share_type
+#   - execution.allocator_lookback (CS-level fallback for moment allocators)
+#   - per-allocator overrides in backtest.sweep.allocators (e.g. lookback,
+#     vol_window, max_weight)
+#
+# ``allocator_lookback`` is the bars-of-underlying-price window applied
+# uniformly to every moment-based allocator. Daily US equity bars → 63
+# ≈ 3 months. ``mvo_ledoit_wolf`` carries an explicit per-allocator
+# override below (126 bars ≈ 6 months) so N/K shrinkage degeneracy doesn't
+# collapse it to identity-target at top_k=50.
+#
+# ``initial_cash`` restored to 1_000_000 (2026-05-16) — the 2026-05-15 SSOT
+# migration drop to 100k caused catastrophic degenerate output here (top_k=50
+# leg suspect; integer-share rounding × high-priced names). See
+# memory/feedback_2026_05_15_equity_sizing_invalidated.md.
+execution:
+  initial_cash: 1_000_000        # restores prior validated state
+  share_type: integer            # US equities trade in whole shares
+  allocator_lookback: 63         # 3 months of daily bars (IV/RP/HRP fallback)
+
+mapping:
+  class: long_short_decile_rebalance
+  position_state_space: long_short
+  entry_logic: decile_sort_long_top_short_bottom
+  sizing: equal_weight_within_decile
+
+costs:
+  class: material
+  model: percentage          # Loader path: bps regime via per_leg_cost_bps_range midpoint.
+  components: [spread, commission, market_impact, borrow_cost]
+  per_leg_cost_bps_range: [5, 20]
+  # per_share is the commission rate for the exploratory per-share
+  # cost-sensitivity regime (read by Ch18 19_costs.py and the run_sweep
+  # planner). IBKR Pro Tiered top tier. NOT used in the headline bps
+  # regime — bps regime is the production cost model.
+  per_share: 0.0035
+  # Documentation-only: loader reads top-level per_leg_cost_bps_range. The
+  # era split is qualitative — see feasibility §B.4 for why flat bps suffices
+  # given the validation window starts 2000-01-12 (pre-decimal era is ~6.5%
+  # of the window).
+  era_dependent:
+    pre_decimalization:
+      period: before 2001-01-29
+      per_leg_cost_bps_range: [15, 30]
+      note: Tick size 1/16 ($0.0625); wider spreads, higher commissions.
+    post_decimalization:
+      period: after 2001-01-29
+      per_leg_cost_bps_range: [5, 15]
+      note: Penny tick regime; electronic trading, lower spreads.
+  borrow_cost_note: Long-short requires borrow for the short leg (~50 bps/yr).
+
+backtest:
+  rebalance:
+    # A rebalance is skipped when the per-asset weight change is below
+    # min_weight_change AND the resulting trade notional is below
+    # min_trade_value. The benchmark profile disables thresholds so that
+    # full-universe equal-weight (1/N per asset) rebalances at all.
+    default:
+      min_weight_change: 0.005
+      min_trade_value: 100.0
+    benchmark:
+      min_weight_change: 0.0
+      min_trade_value: 0.0
+  sweep:
+    # Iteration controls per stage. ``signal: 0`` means "all predictions";
+    # downstream stages take the top-N from the upstream stage's rank-1.
+    # Notebooks read these via get_top_n_predictions(case_study, stage).
+    top_n_predictions:
+      signal: 0                 # all signal predictions (eq-weight baseline)
+      allocation: 10            # top-10 model configs by equal-weight baseline Sharpe
+      cost_sensitivity: 1       # top-1 of {signal+allocation} per label
+      risk_overlay: 1           # top-1 of {signal+allocation} per label
+    # Skip MVO/HRP when allocator runtime is the bottleneck (intraday CSes).
+    expensive_allocators_skip: false
+    # All others (equal_weight, score_weighted, inverse_vol) take the cheap path.
+    # Ch16 signal-stage selection. Long-short equal-weight top-k on three
+    # label horizons (1d primary, 5d/21d variants). The wider top-k grid
+    # reflects the larger universe (~3000 names vs ETFs' 100).
+    top_k_grid:
+      fwd_ret_1d:  [20, 50]
+      fwd_ret_5d:  [20, 50]
+      fwd_ret_21d: [20, 50]
+    # Ch17 portfolio: reuses top_k_grid above and sweeps over allocators.
+    # Moment-based allocators (IV/RP/HRP) use the CS-level
+    # ``execution.allocator_lookback`` (63 bars). ``mvo_ledoit_wolf`` gets
+    # an explicit 126-bar override (6 months) so N/K ≥ 2.5 at top_k=50 and
+    # Ledoit-Wolf shrinkage doesn't collapse to identity-target.
+    # SKIP_EXPENSIVE_ALLOC filters mvo_ledoit_wolf and hrp at notebook
+    # level when requested.
+    # No max_weight cap — see memory/feedback_max_weight_caps_intentionally_absent.md
+    # (capping near top_k forces equal-weight and defeats the comparison).
+    allocators:
+      - {name: equal_weight,    method: equal_weight}
+      - {name: score_weighted,  method: score_weighted}
+      - {name: inverse_vol,     method: inverse_vol}
+      - {name: risk_parity,     method: risk_parity}
+      - {name: mvo_ledoit_wolf, method: mvo_ledoit_wolf, lookback: 126}
+      - {name: hrp,             method: hrp}
+      - {name: conformal_weighted, method: conformal_weighted}
+    # Ch18 cost sensitivity (bps regime — headline). A companion per-share
+    # regime is run from Ch18 cost notebooks for regime comparison; for
+    # us_equities_panel it is exploratory only because the wide price
+    # distribution + adjusted-price confounder make a flat-default
+    # half-spread an artifact rather than realistic friction.
+    cost_grid_bps: [0, 1, 2, 3, 5, 7, 10, 15, 20, 30, 50]
+    # Companion per-share half-spread grid (USD per share). Swept alongside
+    # cost_grid_bps by the planner. Values: 0¢, 0.5¢, 1¢, 2.5¢, 5¢, 10¢.
+    cost_grid_half_spread_usd: [0.0, 0.005, 0.01, 0.025, 0.05, 0.10]
+    # Ch19 risk overlays.
+    risk_controls:
+      position:
+        - {name: stop_loss_3pct,  type: stop_loss,     threshold: 0.03}
+        - {name: stop_loss_5pct,  type: stop_loss,     threshold: 0.05}
+        - {name: stop_loss_10pct, type: stop_loss,     threshold: 0.10}
+        - {name: stop_loss_15pct, type: stop_loss,     threshold: 0.15}
+        - {name: trailing_1pct,   type: trailing_stop, threshold: 0.01}
+        - {name: trailing_2pct,   type: trailing_stop, threshold: 0.02}
+        - {name: trailing_3pct,   type: trailing_stop, threshold: 0.03}
+        - {name: trailing_5pct,   type: trailing_stop, threshold: 0.05}
+        - {name: trailing_10pct,  type: trailing_stop, threshold: 0.10}
+        - {name: trailing_15pct,  type: trailing_stop, threshold: 0.15}
+        - {name: trailing_20pct,  type: trailing_stop, threshold: 0.20}
+        - {name: time_exit_10,    type: time_exit,     bars: 10}
+        - {name: time_exit_20,    type: time_exit,     bars: 20}
+        - {name: time_exit_40,    type: time_exit,     bars: 40}
+
+evaluation:
+  n_splits: 16
+  train_size: 10Y
+  val_size: 1Y
+  holdout_start: '2016-01-01'
+  holdout_end: '2018-03-31'
+  calendar: NYSE
+  periods_per_year: 252  # NYSE 5d/wk
+
+labels:
+  primary: fwd_ret_1d
+  buffer: 1D
+  variants:
+    - fwd_ret_5d
+    - fwd_ret_21d
+  variant_buffers:
+    fwd_ret_5d: 5D
+    fwd_ret_21d: 21D
+  # Vectorized-backtest thinning step per label: number of schedule slots
+  # to advance per trade so holding periods don't overlap.
+  rebalance_step:
+    fwd_ret_1d: 1
+    fwd_ret_5d: 5
+    fwd_ret_21d: 21
+
+model_based:
+  regime:
+    # Calm months and falling ones. Two states is the coarsest split that separates the
+    # calm, mildly positive months from the falling, turbulent ones, which is the
+    # distinction the momentum-crash literature works in.
+    n_clusters: 2
+    # Sessions per clustered window, and how many sessions two consecutive windows share.
+    # A month of sessions per window, overlapping by a week, so a shift in the return
+    # distribution is seen by more than one window before it is clustered.
+    window: 21
+    overlap: 5
+    # Sessions of market history spent before the first clustering is fitted. Three years.
+    # At the 16-session step the window and overlap imply, that is 46 windows to cluster,
+    # which is the fewest that separates two centroids from the noise in a single window.
+    # The clustered series is one market-level series rather than a panel, so this is paid
+    # once for the whole notebook. It matches etfs, whose regime model reads a daily
+    # market-level series of the same shape.
+    burnin: 756
+    # How often the centroids are re-estimated. A quarter. Regime parameters are the
+    # slowest-moving thing this notebook fits and each estimate is n_init k-means searches
+    # over the whole history so far.
+    refit_every: 63
+  garch:
+    # Sessions of a stock's own returns before its variance model is fitted. Two years.
+    # Below that a maximum-likelihood fit of three parameters returns estimates whose
+    # standard errors swamp them, and the persistence term - the one the feature is most
+    # sensitive to - is estimated from too few volatility cycles.
+    burnin: 504
+    # How often the variance model is re-estimated. A quarter, which on this panel is
+    # 3,160 series - the rest carry less than the burn-in above and take the market-level
+    # volatility - re-estimated 58 times each on average, 110 times for a series that
+    # spans the whole sample, and about 183,000 times in all. Section 4b measures what the
+    # cadence buys: the fitted persistence of a US equity moves slowly, so a faster cadence
+    # would multiply the fits without moving the emitted volatility.
+    refit_every: 63
+    # The specification the maximum-likelihood fit estimates, declared here rather than
+    # written into the notebook's call, so what "the GARCH feature" names on this panel is
+    # readable without opening the code. These five are the argument names `arch_model` takes
+    # and 04 passes them through unchanged.
+    #
+    # This is the plain GARCH(1,1)-Normal baseline: a constant mean, a symmetric variance
+    # recursion of order (1,1), and Gaussian innovations. No key here differs from that
+    # baseline, so this case study declares no deviation.
+    #
+    # `o: 0` is the symmetric model. Setting it to 1 adds the leverage term - down days
+    # raising next-day variance more than up days of the same size - which is what
+    # sp500_options and sp500_equity_option_analytics fit on their index series. It is not
+    # fitted here because a broad cross-section of single stocks is where the term is least
+    # reliably identified: many names carry too few large down moves in a two-year estimation
+    # window to separate gamma from alpha, and Section 4b's persistence spread is already the
+    # widest thing the schedule has to hold steady.
+    #
+    # `dist: Normal` is the likelihood, not the filter. It changes which coefficients the
+    # optimizer returns and changes no step of the variance recursion those coefficients are
+    # then run through.
+    mean: Constant
+    vol: GARCH
+    p: 1
+    o: 0
+    q: 1
+    dist: Normal
+
+modeling:
+  gbm:
+    libraries: [lightgbm]
+    preset: default
+    device: cpu
+    # LightGBM's own CPU default. 63 is the GPU default and was carried over with the
+    # device when these runs moved off the GPU, so every CPU fit was quantizing the design
+    # matrix into a quarter of the bins the library would have used. Coarser bins are
+    # faster and lose split points; the reader running this on a CPU gets what the
+    # documentation describes.
+    max_bin: 255
+  latent_factors:
+    persistent_entities: true
+    # Down-tune the SDF schedule on this large-N CS so training time stays
+    # in the overnight budget. Paper defaults (256/64/1024) on broad US
+    # equities at daily frequency would take many hours per fold.
+    model_kwargs:
+      ipca:
+        max_iter: 10000
+        factor_ridge: 0.01
+        gamma_ridge: 0.01
+      sdf:
+        n_epochs_unc: 128
+        n_epochs_moment: 32
+        n_epochs_cond: 512
+        burn_in_epochs: 32
+        checkpoint_epochs: [128, 256, 384, 512]  # conditional-relative; publishes global 128..640
+        beta_checkpoint_epochs: [256]
+        beta_default_checkpoint: 256
+
+causal:
+  treatment: past_ret_12m_skip
+  # Bars the treatment's own construction window spans, which is what the placebo block has
+  # to cover: permuting past_ret_12m_skip in blocks shorter than this destroys the serial
+  # dependence the refutation exists to preserve, and the resulting p-value reads like a
+  # refutation without being one. Declared here rather than inferred, because guessing which
+  # element of a window list a column was built from puts a wrong number behind a right-looking
+  # one. Derived from the construction, not chosen:
+  #
+  # `close.shift(MOMENTUM_SKIP) / close.shift(MOMENTUM_LOOKBACK) - 1` in 02_labels, where
+  # those are 21 and 252 trading sessions. 03_financial_features recomputes it as
+  # `ret_12m_skip`; the oldest price either reads is 252 sessions back.
+  treatment_window: 252
+  confounders: [vol_21d, illiq_rank, volume_ratio]
+  method: walk_forward_dml
+
+# Declared here and cited in prose, not loaded by any notebook. 01_feasibility_analysis
+# section C.2 names the four thresholds and says where each one is measured; no code reads
+# this block, so nothing gates on it.
+kill_conditions:
+  ic_floor: 0.01
+  ic_floor_note: Cross-sectional IC below 0.01 across all features.
+  edge_to_cost_floor: 1.2
+  edge_to_cost_note: Net Sharpe / cost ratio below 1.2x.
+  micro_cap_concentration: 0.5
+  micro_cap_note: Alpha concentrated >50% in bottom ADV quintile (untradeable).
+  net_sharpe_floor: 0.3
+  net_sharpe_note: Net Sharpe after borrow costs below 0.3.

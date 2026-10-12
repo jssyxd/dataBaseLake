@@ -1,0 +1,44 @@
+# Model configurations for fwd_class_1m (classification)
+# Each entry references a preset in case_studies/config/{model_type}/.
+# Comment out lines to skip configs; add new preset names to extend.
+
+linear:
+- logistic_none
+- logistic_l2_C0.001
+- logistic_l2_C0.01
+- logistic_l2_C0.1
+- logistic_l2_C1.0
+- logistic_l2_C10.0
+- logistic_l2_C100.0
+- logistic_l1_C0.001
+- logistic_l1_C0.01
+- logistic_l1_C0.1
+- logistic_l1_C1.0
+- logistic_l1_C10.0
+- logistic_l1_C100.0
+gbm:
+- default_binary
+- leaves_7_binary
+- leaves_15_binary
+- leaves_31_binary
+- leaves_63_binary
+tabular_dl:
+- tabm_s
+- tabm_m
+- tabm_l
+latent_factors:
+# PCA is outside this case study's declared search surface; IPCA is the
+# designated linear characteristic-sorted baseline.
+- ipca
+- cae
+- sdf
+- sae
+# No `causal_dml`. The DML nuisance models are regressors - `case_studies/utils/causal.py`
+# builds both as `HistGradientBoostingRegressor` - and there is no classification branch, so
+# running a declared causal menu on this label fits a regressor to a class target and banks the
+# result as a canonical causal estimate. Nothing has ever run it here: all six rows in
+# `causal_runs` are on `fwd_ret_1m`. The trap was that the declaration outlived the absence of a
+# path to honour it, so a reader comparing the declared menu against the production count sees a
+# missing causal result and extends the notebook to produce it. The return labels keep their
+# `causal_dml` - a continuous target is what DML as implemented estimates. See
+# ml4t/agent-workspace#396.

@@ -1,0 +1,742 @@
+[
+  {
+    "category": "crypto",
+    "symbol": "BTCUSD",
+    "venue": "CRYPTO",
+    "bar_type": "BTCUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 2461,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-26 00:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 170084
+  },
+  {
+    "category": "crypto",
+    "symbol": "ETHUSD",
+    "venue": "CRYPTO",
+    "bar_type": "ETHUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 2461,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-26 00:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 170924
+  },
+  {
+    "category": "crypto",
+    "symbol": "SOLUSD",
+    "venue": "CRYPTO",
+    "bar_type": "SOLUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 2361,
+    "start_date": "2020-04-10 00:00:00+00:00",
+    "end_date": "2026-09-26 00:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 164391
+  },
+  {
+    "category": "crypto",
+    "symbol": "XRPUSD",
+    "venue": "CRYPTO",
+    "bar_type": "XRPUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 2461,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-26 00:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 168243
+  },
+  {
+    "category": "crypto",
+    "symbol": "BNBUSD",
+    "venue": "CRYPTO",
+    "bar_type": "BNBUSD.CRYPTO-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 2461,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-26 00:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 166774
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "ES",
+    "venue": "CME",
+    "bar_type": "ES.CME-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1695,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 117629
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "NQ",
+    "venue": "CME",
+    "bar_type": "NQ.CME-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1695,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 120086
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "FESX",
+    "venue": "EUREX",
+    "bar_type": "FESX.EUREX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1695,
+    "start_date": "2020-01-02 23:00:00+00:00",
+    "end_date": "2026-09-24 22:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 127160
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "NKD",
+    "venue": "OSE",
+    "bar_type": "NKD.OSE-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1642,
+    "start_date": "2020-01-05 15:00:00+00:00",
+    "end_date": "2026-09-24 15:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 124613
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "FDAX",
+    "venue": "EUREX",
+    "bar_type": "FDAX.EUREX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1716,
+    "start_date": "2020-01-01 23:00:00+00:00",
+    "end_date": "2026-09-24 22:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 129316
+  },
+  {
+    "category": "commodities",
+    "symbol": "CL",
+    "venue": "NYMEX",
+    "bar_type": "CL.NYMEX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 125489
+  },
+  {
+    "category": "commodities",
+    "symbol": "BZ",
+    "venue": "ICE",
+    "bar_type": "BZ.ICE-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1694,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-24 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 123742
+  },
+  {
+    "category": "commodities",
+    "symbol": "GC",
+    "venue": "COMEX",
+    "bar_type": "GC.COMEX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1695,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 121141
+  },
+  {
+    "category": "commodities",
+    "symbol": "NG",
+    "venue": "NYMEX",
+    "bar_type": "NG.NYMEX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1695,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 127024
+  },
+  {
+    "category": "commodities",
+    "symbol": "ZC",
+    "venue": "CBOT",
+    "bar_type": "ZC.CBOT-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1693,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 111481
+  },
+  {
+    "category": "commodities",
+    "symbol": "HG",
+    "venue": "COMEX",
+    "bar_type": "HG.COMEX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1695,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 123168
+  },
+  {
+    "category": "metals",
+    "symbol": "XAUUSD",
+    "venue": "METALS",
+    "bar_type": "XAUUSD.METALS-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1695,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 121469
+  },
+  {
+    "category": "metals",
+    "symbol": "XAGUSD",
+    "venue": "METALS",
+    "bar_type": "XAGUSD.METALS-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1694,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 123558
+  },
+  {
+    "category": "metals",
+    "symbol": "XPTUSD",
+    "venue": "METALS",
+    "bar_type": "XPTUSD.METALS-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1693,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-24 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 118053
+  },
+  {
+    "category": "metals",
+    "symbol": "XPDUSD",
+    "venue": "METALS",
+    "bar_type": "XPDUSD.METALS-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1693,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 117670
+  },
+  {
+    "category": "rwa_gold",
+    "symbol": "XAUT",
+    "venue": "RWA",
+    "bar_type": "XAUT.RWA-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 2424,
+    "start_date": "2020-02-07 00:00:00+00:00",
+    "end_date": "2026-09-26 00:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 158920
+  },
+  {
+    "category": "rwa_gold",
+    "symbol": "PAXG",
+    "venue": "RWA",
+    "bar_type": "PAXG.RWA-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 2461,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-26 00:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 161035
+  },
+  {
+    "category": "fx",
+    "symbol": "EURUSD",
+    "venue": "FX",
+    "bar_type": "EURUSD.FX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1705,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-25 23:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 117113
+  },
+  {
+    "category": "fx",
+    "symbol": "USDJPY",
+    "venue": "FX",
+    "bar_type": "USDJPY.FX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1653,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-24 23:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 115686
+  },
+  {
+    "category": "fx",
+    "symbol": "USDCNY",
+    "venue": "FX",
+    "bar_type": "USDCNY.FX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1715,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-24 23:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 115918
+  },
+  {
+    "category": "fx",
+    "symbol": "GBPUSD",
+    "venue": "FX",
+    "bar_type": "GBPUSD.FX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1710,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-24 23:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 117559
+  },
+  {
+    "category": "fx",
+    "symbol": "USDCHF",
+    "venue": "FX",
+    "bar_type": "USDCHF.FX-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1711,
+    "start_date": "2020-01-01 00:00:00+00:00",
+    "end_date": "2026-09-24 23:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 117872
+  },
+  {
+    "category": "rates_bonds",
+    "symbol": "ZN",
+    "venue": "CBOT",
+    "bar_type": "ZN.CBOT-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 111035
+  },
+  {
+    "category": "rates_bonds",
+    "symbol": "ZF",
+    "venue": "CBOT",
+    "bar_type": "ZF.CBOT-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 113614
+  },
+  {
+    "category": "rates_bonds",
+    "symbol": "ZT",
+    "venue": "CBOT",
+    "bar_type": "ZT.CBOT-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1693,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 112010
+  },
+  {
+    "category": "rates_bonds",
+    "symbol": "TN",
+    "venue": "CBOT",
+    "bar_type": "TN.CBOT-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1691,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 112017
+  },
+  {
+    "category": "rates_bonds",
+    "symbol": "SOFR",
+    "venue": "CME",
+    "bar_type": "SOFR_TLT.CME-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 147341
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "SPX",
+    "venue": "CBOE",
+    "bar_type": "SPX.CBOE-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 128929
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "SPY",
+    "venue": "ARCA",
+    "bar_type": "SPY.ARCA-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 148234
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "QQQ",
+    "venue": "NASDAQ",
+    "bar_type": "QQQ.NASDAQ-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 148388
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "NDX",
+    "venue": "NASDAQ",
+    "bar_type": "NDX.NASDAQ-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 129924
+  },
+  {
+    "category": "equities_indices",
+    "symbol": "IWM",
+    "venue": "ARCA",
+    "bar_type": "IWM.ARCA-1-DAY-LAST-EXTERNAL",
+    "timeframe": "1d",
+    "clean_rows": 1692,
+    "start_date": "2020-01-02 05:00:00+00:00",
+    "end_date": "2026-09-25 04:00:00+00:00",
+    "years": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025,
+      2026
+    ],
+    "size_bytes": 147956
+  }
+]

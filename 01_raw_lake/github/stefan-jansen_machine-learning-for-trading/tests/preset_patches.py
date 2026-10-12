@@ -1,0 +1,140 @@
+"""Test-only model preset overrides.
+
+Deliberately free of a pytest import: tests/generate_intermediates.py runs
+standalone (`uv run python tests/generate_intermediates.py`, no dev extra
+required) and imports this module, as does tests/conftest.py under pytest.
+Two copies of this table previously drifted - a fix landing in one left the
+other on stale values with no error to signal it.
+"""
+
+from pathlib import Path
+
+import yaml
+
+# Per-model-type overrides applied to copied preset YAMLs.
+# Goal: minimal workload that still exercises the training loop + registry.
+_TEST_PRESET_PATCHES: dict[str, dict] = {
+    "lgb": {"max_iterations": 2, "checkpoint_interval": 1},
+    # DL families: 2 epochs, checkpoint every epoch
+    "lstm": {"n_epochs": 2, "checkpoint_interval": 1},
+    "tsmixer": {"n_epochs": 2, "checkpoint_interval": 1},
+    "tcn": {"n_epochs": 2, "checkpoint_interval": 1},
+    "nlinear": {"n_epochs": 2, "checkpoint_interval": 1},
+    # PatchTST additionally has its window cut. It is channel-independent, so the encoder
+    # sees `batch_size x n_features` sequences - 2048 x 88 on this fixture's nasdaq panel -
+    # and the cost of each is set by the window. At the preset's 60 it does not finish a
+    # two-fold fit inside a 600s cell budget on a CPU runner. 24 holds two patches at the
+    # preset's patch_size 16 and stride 8, which is the smallest window that still exercises
+    # patching rather than degenerating to one patch. This is the reduction the research-
+    # boundary conversion dropped: `tests/overrides.yaml` carried `LOOKBACK: 24` for this
+    # notebook before it stopped binding the name, and no preview reduction can set it -
+    # `_SEQUENCE_PREVIEW_FIELDS` is {folds, max_symbols, max_train_sequences}.
+    "patchtst": {"n_epochs": 2, "checkpoint_interval": 1, "params": {"lookback": 24}},
+    # TabDL: 2 epochs
+    "tabm": {"n_epochs": 2, "checkpoint_interval": 1},
+    # Latent factors: 2 epochs
+    "cae": {"n_epochs": 2, "checkpoint_interval": 1},
+    "sdf": {"n_epochs": 2, "checkpoint_interval": 1},
+    "sae": {"n_epochs": 2, "checkpoint_interval": 1},
+    # IPCA's ALS needs far more sweeps on a fixture cross-section than on the
+    # production one - 259-693 per fold on sp500_equity_option_analytics's
+    # 21-asset panel at K=2 - but no max_iter patch is needed for that: the
+    # pinned ml4t-models build defaults max_iter to 10,000 and nothing on
+    # this path narrows it. factor_ridge/gamma_ridge are raised instead: the
+    # fixture sits right at the K=2/K=3 identification boundary, where
+    # convergence is sensitive enough to floating-point path that it
+    # deterministically diverged between two machines on the unregularized
+    # 1e-6 default (see tests/overrides.yaml's 11b_ipca entry for the
+    # measured before/after). Regularizing is a conditioning fix, not a
+    # bigger budget.
+    #
+    # It carries no n_epochs or checkpoint_interval, and that asymmetry with the eight entries
+    # above is deliberate. IPCA is fitted by ALS once per fold and publishes a final checkpoint
+    # only, so it has no epochs to shorten and no interval to checkpoint on; `pca`, the other
+    # model of that shape, has no entry here at all. The two keys were present verbatim from the
+    # epoch-based neighbours and set checkpoint_interval to 1, which the latent-factor adapter
+    # rejects outright (latent_factors/adapter.py:236-239) because the value means nothing for
+    # these models - so every ipca run through that adapter failed at resolution. Do not restore
+    # them for symmetry with the block above.
+    "ipca": {"factor_ridge": 1e-2, "gamma_ridge": 1e-2},
+}
+
+
+def _patch_presets_for_testing(config_dir: Path) -> None:
+    """Patch copied preset YAMLs with reduced-workload values for testing."""
+    for model_type, overrides in _TEST_PRESET_PATCHES.items():
+        model_dir = config_dir / model_type
+        if not model_dir.exists():
+            continue
+        for preset_path in model_dir.glob("*.yaml"):
+            preset = yaml.safe_load(preset_path.read_text())
+            if preset is None:
+                continue
+            # `params` is merged rather than replaced: an entry that reduces one architecture
+            # parameter must not drop the rest of the block with it.
+            nested = overrides.get("params")
+            preset.update({k: v for k, v in overrides.items() if k != "params"})
+            if nested:
+                preset["params"] = {**(preset.get("params") or {}), **nested}
+            with open(preset_path, "w") as f:
+                yaml.dump(preset, f, default_flow_style=False)
+
+
+# Max configs per family in training menu YAMLs (keep tests fast but comprehensive).
+# Only applied to families with homogeneous sweep configs (linear, gbm).
+# DL/TabDL/latent/causal families are NOT trimmed because each config often
+# maps to a dedicated notebook (e.g., 09_dl_lstm, 10_dl_tsmixer).
+_MAX_CONFIGS_PER_FAMILY = 2
+_TRIM_FAMILIES = {"linear", "gbm"}
+
+
+def _spread(configs: list, keep: int) -> list:
+    """The ``keep`` configs that span the menu, in menu order.
+
+    Not ``configs[:keep]``. A training menu is written as a path - ``ols``,
+    ``ridge_a0.001``, ``ridge_a0.01``, ... out to ``enet_f0.85`` - so its first two
+    entries are the two whose penalty differs least, and the head is the one slice
+    guaranteed to keep configurations that cannot be told apart. crypto's
+    ``fwd_ret_8h`` menu is 28 long and the head-two trim left ``ols`` and
+    ``ridge_a0.001``, which agree on every statistic the registry records: rank IC
+    reads the ordering of the predictions, and a penalty of 0.001 does not reorder
+    them. The fixture then had a model comparison with no distinguishable outcome,
+    and ``11_ml_pipeline/07_case_study_insights`` was correct to refuse a rank one
+    it could not resolve: that refusal is what failed ch11-12 on main.
+
+    Spanning the menu keeps ``ols`` and ``enet_f0.85`` instead: the same two-config
+    budget, spent on configurations a selection rule can separate.
+    """
+    if keep >= len(configs):
+        return list(configs)
+    if keep == 1:
+        return [configs[0]]
+    step = (len(configs) - 1) / (keep - 1)
+    return [configs[round(i * step)] for i in range(keep)]
+
+
+def _trim_label_configs(cs_config_dir: Path) -> None:
+    """Trim training menu YAMLs to at most _MAX_CONFIGS_PER_FAMILY for sweep families.
+
+    The menus live at ``config/training/fwd_*.yaml``. An earlier copy of this
+    function globbed ``config/fwd_*.yaml``, matched nothing, and silently left
+    every sweep family at full width.
+    """
+    training_dir = cs_config_dir / "training"
+    label_root = training_dir if training_dir.exists() else cs_config_dir
+    for label_yaml in label_root.glob("fwd_*.yaml"):
+        data = yaml.safe_load(label_yaml.read_text())
+        if data is None or not isinstance(data, dict):
+            continue
+        trimmed = False
+        for family, configs in data.items():
+            if (
+                family in _TRIM_FAMILIES
+                and isinstance(configs, list)
+                and len(configs) > _MAX_CONFIGS_PER_FAMILY
+            ):
+                data[family] = _spread(configs, _MAX_CONFIGS_PER_FAMILY)
+                trimmed = True
+        if trimmed:
+            with open(label_yaml, "w") as f:
+                yaml.dump(data, f, default_flow_style=False)

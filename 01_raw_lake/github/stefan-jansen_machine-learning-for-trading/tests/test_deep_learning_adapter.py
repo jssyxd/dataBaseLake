@@ -1,0 +1,1039 @@
+from __future__ import annotations
+
+import datetime as _dt
+import os
+from datetime import datetime
+from importlib.metadata import version
+from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
+import polars as pl
+import pytest
+
+from case_studies.research import CVSpec, LabelDefinition, Study
+from case_studies.utils import deep_learning, tabular_dl
+from case_studies.utils.deep_learning import (
+    resolve_dl_max_train_sequences,
+    resolve_dl_train_sequence_stride,
+)
+from tests.test_research_workspace import _seed_release
+
+
+def _resolve_nlinear_request(
+    tmp_path, monkeypatch, entity: str = "symbol", library: str = "pytorch", **request_overrides
+):
+    study = Study.open(
+        "etfs", workspace=tmp_path / "workspace", release_root=_seed_release(tmp_path)
+    )
+    dates = [
+        "2024-01-02",
+        "2024-01-03",
+        "2024-01-04",
+        "2024-01-05",
+        "2024-01-08",
+        "2024-01-09",
+        "2024-01-10",
+        "2024-01-11",
+    ]
+    frame = pl.DataFrame(
+        {
+            entity: [f"S{symbol}" for symbol in range(3) for _ in dates],
+            "timestamp": dates * 3,
+            "feature": [float(index) for index in range(24)],
+            "fwd_ret_1d": [float(index % 3) / 100 for index in range(24)],
+        }
+    ).with_columns(pl.col("timestamp").str.to_date())
+    label = study.labels.publish(
+        LabelDefinition("fwd_ret_1d", "regression", "1D"),
+        frame.rename({entity: "symbol"}).select("symbol", "timestamp", "fwd_ret_1d"),
+    )
+    splits = [
+        {
+            "fold": 0,
+            "train_start": "2024-01-02",
+            "train_end": "2024-01-05",
+            "val_start": "2024-01-08",
+            "val_end": "2024-01-11",
+        }
+    ]
+    mds = SimpleNamespace(
+        dataset=frame,
+        feature_names=["feature"],
+        label_col="fwd_ret_1d",
+        date_col="timestamp",
+        entity_cols=[entity],
+        splits=splits,
+        task_type="regression",
+        class_values=[],
+        temporal_by_fold=None,
+        temporal_keys=[],
+        temporal_feature_names=[],
+        input_lineage={
+            "artifacts": {"financial": {"sha256": "features-v1", "size": 1}},
+            "fingerprint": "fixture-v1",
+        },
+    )
+    monkeypatch.setattr("utils.modeling.load_modeling_dataset", lambda *args, **kwargs: mds)
+    monkeypatch.setattr(
+        "utils.modeling.load_configs",
+        lambda *args, **kwargs: [
+            {
+                "batch_size": 64,
+                "checkpoint_interval": 2,
+                "n_epochs": 4,
+                "params": {
+                    "architecture": "tsmixer" if library == "darts" else "nlinear",
+                    "dropout": 0.0,
+                    "lookback": 2,
+                },
+                "config_name": "nlinear_probe",
+                "family": "deep_learning",
+                "library": library,
+            }
+        ],
+    )
+
+    resolved = study.model(
+        family="deep_learning",
+        label=label.name,
+        config_name="nlinear_probe",
+        overrides={"device": "cpu", "n_epochs": 3},
+        **request_overrides,
+    ).resolve()
+    return study, label, resolved
+
+
+def test_preview_sequence_resolution_stays_inside_the_preview_output_root(
+    tmp_path, monkeypatch
+) -> None:
+    """Resolving a preview request must not switch the active output root back to canonical.
+
+    Every other family adapter passes the request tier into ``study.labels.get``. The sequence
+    adapter resolved the label at the default canonical tier, which re-activates the study at the
+    base workspace and drops the ``.preview`` root that ``activate`` had just linked the label
+    artifacts into - so a sequence preview could not find its own label and no sequence
+    notebook could run a reduced-scale proof at all.
+    """
+    from case_studies.research.contracts import ExecutionTier
+
+    study, _label, resolved = _resolve_nlinear_request(
+        tmp_path,
+        monkeypatch,
+        execution_tier="preview",
+        preview_reductions={"folds": [0], "max_symbols": 2, "max_train_sequences": 8},
+    )
+
+    preview_root = study.storage_root(ExecutionTier.PREVIEW)
+    assert os.environ["ML4T_OUTPUT_DIR"] == str(preview_root.parent)
+    assert resolved.spec["execution_tier"] == "preview"
+
+
+def test_sequence_resolver_builds_complete_resolved_request(tmp_path, monkeypatch) -> None:
+    _study, label, resolved = _resolve_nlinear_request(tmp_path, monkeypatch)
+    spec = resolved.spec
+    context = resolved._context
+
+    computation = spec["computation"]
+    assert spec["identity_version"] == 3
+    assert computation["label_artifact"]["digest"] == label.digest
+    assert computation["model"]["params"]["n_epochs"] == 3
+    assert [row["value"] for row in computation["checkpoint_schedule"]] == [2, 3]
+    assert computation["expected_prediction_keys"]["n_rows"] == 12
+    assert computation["sampling"] == {"max_symbols": 0, "max_train_sequences": 0}
+    assert context.expected_keys.height == 12
+    assert context.config["n_epochs"] == 3
+
+
+def test_cached_sequence_run_resolves_predictions_at_the_published_identity(
+    tmp_path, monkeypatch
+) -> None:
+    from case_studies.research.results import Result
+    from case_studies.utils.registry import prediction_hash_from_parts, training_hash_from_spec
+
+    study, _label, resolved = _resolve_nlinear_request(tmp_path, monkeypatch)
+    spec = resolved.spec
+    requested: list[str] = []
+
+    @classmethod
+    def _record(cls, study_arg, result_hash, **kwargs):
+        requested.append(result_hash)
+        return SimpleNamespace(hash=result_hash)
+
+    monkeypatch.setattr(Result, "open", _record)
+
+    assert deep_learning._cached_sequence_run(study, spec, resolved._context) is None
+
+    training_hash = training_hash_from_spec(spec)
+    expected = [
+        prediction_hash_from_parts(
+            training_hash,
+            row["value"],
+            "validation",
+            checkpoint_kind="epoch",
+            identity_version=spec["identity_version"],
+        )
+        for row in spec["computation"]["checkpoint_schedule"]
+    ]
+    assert requested == [training_hash, *expected]
+
+
+def test_darts_request_resolves_installed_runtime_identity(tmp_path, monkeypatch) -> None:
+    study = Study.open(
+        "etfs", workspace=tmp_path / "workspace", release_root=_seed_release(tmp_path)
+    )
+    dates = [
+        "2024-01-02",
+        "2024-01-03",
+        "2024-01-04",
+        "2024-01-05",
+        "2024-01-08",
+        "2024-01-09",
+    ]
+    frame = pl.DataFrame(
+        {
+            "symbol": [f"S{symbol}" for symbol in range(3) for _ in dates],
+            "timestamp": dates * 3,
+            "feature": [float(index) for index in range(18)],
+            "fwd_ret_1d": [float(index % 3) / 100 for index in range(18)],
+        }
+    ).with_columns(pl.col("timestamp").str.to_date())
+    label = study.labels.publish(
+        LabelDefinition("fwd_ret_1d", "regression", "1D"),
+        frame.select("symbol", "timestamp", "fwd_ret_1d"),
+    )
+    split = {
+        "fold": 0,
+        "train_start": "2024-01-02",
+        "train_end": "2024-01-05",
+        "val_start": "2024-01-08",
+        "val_end": "2024-01-09",
+    }
+    mds = SimpleNamespace(
+        dataset=frame,
+        feature_names=["feature"],
+        label_col="fwd_ret_1d",
+        date_col="timestamp",
+        entity_cols=["symbol"],
+        splits=[split],
+        task_type="regression",
+        class_values=[],
+        temporal_by_fold=None,
+        temporal_keys=[],
+        temporal_feature_names=[],
+        input_lineage={
+            "artifacts": {"financial": {"sha256": "features-v1", "size": 1}},
+            "fingerprint": "fixture-v1",
+        },
+    )
+    monkeypatch.setattr("utils.modeling.load_modeling_dataset", lambda *args, **kwargs: mds)
+    monkeypatch.setattr(
+        "utils.modeling.load_configs",
+        lambda *args, **kwargs: [
+            {
+                "batch_size": 64,
+                "checkpoint_interval": 1,
+                "n_epochs": 1,
+                "params": {"architecture": "tsmixer", "lookback": 2},
+                "config_name": "tsmixer_probe",
+                "family": "deep_learning",
+                "library": "darts",
+            }
+        ],
+    )
+    expected = (
+        frame.filter(pl.col("timestamp") >= pl.date(2024, 1, 8))
+        .select("symbol", "timestamp")
+        .with_columns(pl.lit(0, dtype=pl.Int64).alias("fold"))
+    )
+    monkeypatch.setattr(
+        "case_studies.utils.darts_forecasting.darts_validation_keys",
+        lambda *args, **kwargs: expected,
+    )
+    monkeypatch.setattr(
+        "case_studies.utils.darts_forecasting.darts_training_identity",
+        lambda *args, **kwargs: {
+            "base_target_data_spec": {"kind": "one_period_return"},
+            "input_data_spec": mds.input_lineage,
+            "input_chunk_length": 2,
+            "output_chunk_length": 1,
+            "max_train_sequences": 0,
+        },
+    )
+
+    resolved = study.model(
+        family="deep_learning",
+        label=label.name,
+        config_name="tsmixer_probe",
+        overrides={"device": "cpu"},
+    ).resolve()
+
+    computation = resolved.spec["computation"]
+    assert computation["runtime_identity"]["darts"] == version("darts")
+    assert computation["model"]["implementation"] == "darts"
+
+
+def test_weekly_nbeats_request_applies_identity_cadence_before_cv(tmp_path, monkeypatch) -> None:
+    release = _seed_release(tmp_path)
+    (release / "case_studies" / "etfs").rename(release / "case_studies" / "us_equities_panel")
+    study = Study.open(
+        "us_equities_panel",
+        workspace=tmp_path / "workspace",
+        release_root=release,
+    )
+    dates = pl.date_range(pl.date(2023, 1, 2), pl.date(2024, 3, 29), eager=True).filter(
+        pl.date_range(pl.date(2023, 1, 2), pl.date(2024, 3, 29), eager=True).dt.weekday() <= 5
+    )
+    frame = pl.DataFrame(
+        {
+            "symbol": [f"S{symbol}" for symbol in range(3) for _ in dates],
+            "timestamp": dates.to_list() * 3,
+            "feature": [float(index) for index in range(3 * len(dates))],
+            "temporal": [float(index % 7) for index in range(3 * len(dates))],
+            "fwd_ret_5d": [float(index % 3) / 100 for index in range(3 * len(dates))],
+        }
+    )
+    label = study.labels.publish(
+        LabelDefinition("fwd_ret_5d", "regression", "5D"),
+        frame.select("symbol", "timestamp", "fwd_ret_5d"),
+    )
+    cv = CVSpec.walk_forward(
+        training_window="80D",
+        validation_window="20D",
+        retrain_every="20D",
+        folds=(0,),
+        horizon="5D",
+        gap="5D",
+        holdout_start="2024-02-01",
+        holdout_end="2024-03-29",
+        calendar="NYSE",
+    )
+    canonical_folds = [
+        dict(fold) for fold in cv.resolve(frame.select("timestamp").unique()).normalized_folds
+    ]
+    temporal_by_fold = (
+        frame.select("symbol", "timestamp", "temporal")
+        .with_columns(pl.lit(0, dtype=pl.Int64).alias("fold"))
+        .to_pandas()
+    )
+    mds = SimpleNamespace(
+        dataset=frame,
+        feature_names=["feature", "temporal"],
+        label_col="fwd_ret_5d",
+        date_col="timestamp",
+        entity_cols=["symbol"],
+        splits=canonical_folds,
+        task_type="regression",
+        class_values=[],
+        temporal_by_fold=temporal_by_fold,
+        temporal_keys=["symbol", "timestamp"],
+        temporal_feature_names=["temporal"],
+        input_lineage={
+            "artifacts": {"financial": {"sha256": "features-v1", "size": 1}},
+            "fingerprint": "fixture-v1",
+        },
+    )
+    monkeypatch.setattr("utils.modeling.load_modeling_dataset", lambda *args, **kwargs: mds)
+    monkeypatch.setattr(
+        "utils.modeling.load_configs",
+        lambda *args, **kwargs: [
+            {
+                "batch_size": 64,
+                "checkpoint_interval": 1,
+                "n_epochs": 1,
+                "params": {
+                    "architecture": "nbeats",
+                    "decision_cadence": "weekly_friday",
+                    "lookback": 12,
+                    "darts_input_chunk_length": 12,
+                    "darts_output_chunk_length": 2,
+                    "darts_target": "lagged_label",
+                },
+                "config_name": "nbeats_weekly",
+                "family": "deep_learning",
+                "library": "darts",
+            }
+        ],
+    )
+    resolved = study.model(
+        family="deep_learning",
+        label=label.name,
+        config_name="nbeats_weekly",
+        overrides={"device": "cpu"},
+        cv=cv,
+    ).resolve()
+
+    context = resolved._context
+    observed_timestamps = sorted(context.dataset_pd["timestamp"].unique())
+    split = context.splits[0]
+    assert len(observed_timestamps) < len(dates)
+    assert all(timestamp.weekday() == 4 for timestamp in observed_timestamps)
+    assert list(context.splits) == canonical_folds
+    assert pd.Timestamp(split["val_start"]) - pd.Timestamp(split["train_end"]) >= pd.Timedelta("5D")
+    computation = resolved.spec["computation"]
+    assert computation["cv"]["request"]["decision_cadence"] is None
+    assert computation["cv"]["request"]["gap"] == "5D"
+    assert computation["model"]["params"]["decision_cadence"] == "weekly_friday"
+    assert computation["preprocessing"]["decision_cadence"] == "weekly_friday"
+    eligible_timestamps = [
+        timestamp
+        for timestamp in observed_timestamps
+        if pd.Timestamp(split["val_start"]) <= timestamp <= pd.Timestamp(split["val_end"])
+    ]
+    expected = pl.DataFrame(
+        {
+            "symbol": [f"S{symbol}" for symbol in range(3) for _ in eligible_timestamps],
+            "timestamp": eligible_timestamps * 3,
+            "fold": [0] * (3 * len(eligible_timestamps)),
+        }
+    ).sort("symbol", "timestamp", "fold")
+    assert context.expected_keys.equals(expected)
+    assert computation["expected_prediction_keys"]["n_rows"] == expected.height
+
+
+def test_run_dl_cv_applies_preset_cadence_before_backend(monkeypatch) -> None:
+    dates = pd.bdate_range("2024-01-01", "2024-01-19")
+    dataset = pd.DataFrame(
+        {
+            "symbol": "S0",
+            "timestamp": dates,
+            "feature": range(len(dates)),
+            "fwd_ret_5d": 0.01,
+        }
+    )
+    config = {
+        "batch_size": 8,
+        "checkpoint_interval": 1,
+        "config_name": "nbeats_weekly",
+        "family": "deep_learning",
+        "library": "darts",
+        "n_epochs": 1,
+        "params": {
+            "architecture": "nbeats",
+            "decision_cadence": "weekly_friday",
+            "darts_input_chunk_length": 2,
+            "darts_output_chunk_length": 2,
+            "darts_target": "lagged_label",
+            "lookback": 2,
+        },
+    }
+    observed: dict[str, pd.DataFrame] = {}
+    sentinel = {"all_predictions": pl.DataFrame()}
+
+    def capture_backend(dataset_pd, _splits, **_kwargs):
+        observed["dataset"] = dataset_pd
+        return sentinel
+
+    monkeypatch.setattr(
+        "case_studies.utils.darts_forecasting.run_darts_cv",
+        capture_backend,
+    )
+
+    result = deep_learning.run_dl_cv(
+        dataset,
+        [
+            {
+                "fold": 0,
+                "train_start": dates[0],
+                "train_end": dates[7],
+                "val_start": dates[8],
+                "val_end": dates[-1],
+            }
+        ],
+        configs=[config],
+        n_features=1,
+        feature_names=["feature"],
+        label_col="fwd_ret_5d",
+        date_col="timestamp",
+        device="cpu",
+        case_study="us_equities_panel",
+    )
+
+    assert result is sentinel
+    assert observed["dataset"]["timestamp"].dt.weekday.eq(4).all()
+
+
+def test_sequence_adapter_rejects_unknown_decision_cadence() -> None:
+    dataset = pd.DataFrame({"timestamp": pd.bdate_range("2024-01-01", periods=5)})
+
+    with pytest.raises(ValueError, match="unsupported sequence decision cadence"):
+        deep_learning._select_sequence_observations(
+            dataset,
+            date_col="timestamp",
+            cadence="weekly_fri",
+            calendar="NYSE",
+        )
+
+
+@pytest.mark.parametrize(
+    "split_resolver", [deep_learning._sequence_splits, tabular_dl._tabm_splits]
+)
+def test_deep_adapters_reject_custom_cv_with_stale_temporal_geometry(split_resolver) -> None:
+    canonical = {
+        "fold": 0,
+        "train_start": "2020-01-01",
+        "train_end": "2020-12-31",
+        "val_start": "2021-01-01",
+        "val_end": "2021-12-31",
+    }
+    requested = {**canonical, "val_start": "2020-07-01"}
+    resolved_cv = SimpleNamespace(
+        normalized_folds=(requested,),
+        as_dict=lambda: {"folds": [requested]},
+    )
+    cv = SimpleNamespace(resolve=lambda *args, **kwargs: resolved_cv)
+    mds = SimpleNamespace(
+        dataset=pl.DataFrame({"timestamp": ["2020-01-01"]}).with_columns(
+            pl.col("timestamp").str.to_date()
+        ),
+        date_col="timestamp",
+        splits=[canonical],
+        temporal_by_fold=pl.DataFrame({"fold": [0], "timestamp": ["2021-01-01"]}).with_columns(
+            pl.col("timestamp").str.to_date()
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Custom CV cannot reuse fold-specific temporal features"):
+        split_resolver(mds, {"cv": cv, "preview_reductions": {}})
+
+
+@pytest.mark.parametrize("entity", ["symbol", "product"])
+def test_sequence_resolver_accepts_either_canonical_entity_key(
+    tmp_path, monkeypatch, entity
+) -> None:
+    _study, _label, resolved = _resolve_nlinear_request(tmp_path, monkeypatch, entity=entity)
+
+    assert resolved._context.entity_col == entity
+    assert resolved._context.expected_keys.columns == ["symbol", "timestamp", "fold"]
+    assert resolved._context.expected_keys.height > 0
+
+
+def test_sequence_resolver_rejects_an_unsupported_entity_key(tmp_path, monkeypatch) -> None:
+    with pytest.raises(ValueError, match="does not support entity key 'ticker'"):
+        _resolve_nlinear_request(tmp_path, monkeypatch, entity="ticker")
+
+
+def test_darts_presets_refuse_a_non_symbol_entity_key(tmp_path, monkeypatch) -> None:
+    """The Darts key builder names its keys after the entity column, unlike the other three."""
+    with pytest.raises(ValueError, match="Darts presets require the symbol entity key"):
+        _resolve_nlinear_request(tmp_path, monkeypatch, entity="product", library="darts")
+
+
+@pytest.mark.parametrize("entity", ["symbol", "product"])
+def test_sequence_publishes_predictions_under_the_expected_key_names(entity) -> None:
+    """The runner emits the reader-facing entity key; the registry contract expects `symbol`."""
+    from case_studies.utils import deep_learning
+
+    expected_keys = pl.DataFrame(
+        {
+            "symbol": ["ES", "NQ"],
+            "timestamp": [datetime(2024, 1, 8), datetime(2024, 1, 8)],
+            "fold": [0, 0],
+        }
+    )
+    all_predictions = pl.DataFrame(
+        {
+            "config": ["nlinear_probe"] * 2,
+            "epoch": [2, 2],
+            entity: ["ES", "NQ"],
+            "timestamp": [datetime(2024, 1, 8), datetime(2024, 1, 8)],
+            "fold_id": [0, 0],
+            "y_true": [0.01, -0.01],
+            "y_score": [0.02, -0.02],
+        }
+    )
+    context = SimpleNamespace(
+        config={"config_name": "nlinear_probe"},
+        entity_col=entity,
+        expected_keys=expected_keys,
+        label_col="fwd_ret_1d",
+        prediction_split="validation",
+        published_checkpoints=None,
+    )
+    published = []
+
+    def capture(_training, **kwargs):
+        published.append(kwargs["predictions"])
+        return kwargs["predictions"]
+
+    study = SimpleNamespace(results=SimpleNamespace(publish_predictions=capture))
+    computation = {"checkpoint_schedule": [{"kind": "epoch", "value": 2}]}
+
+    results = deep_learning._publish_sequence_predictions(
+        study, computation, context, object(), {"all_predictions": all_predictions}
+    )
+
+    assert len(results) == 1 and len(published) == 1
+    frame = published[0]
+    assert "symbol" in frame.columns
+    assert entity not in set(frame.columns) - {"symbol"}
+    assert (
+        frame.select("symbol", "timestamp", "fold")
+        .sort("symbol")
+        .equals(expected_keys.sort("symbol"))
+    )
+
+
+def test_sequence_resolver_keeps_a_preview_request_inside_the_preview_root(
+    tmp_path, monkeypatch
+) -> None:
+    """Resolving under the preview tier must not repoint the output root at the workspace.
+
+    `LabelCatalog.get` activates the study on the tier it is handed, defaulting to canonical.
+    A resolver that omits the argument silently moves `ML4T_OUTPUT_DIR` from
+    `<workspace>/.preview` back to `<workspace>`, so a preview writes where a canonical run
+    would. Every sequence preview failed this way until the tier was threaded through.
+    """
+    study, _label, resolved = _resolve_nlinear_request(
+        tmp_path,
+        monkeypatch,
+        execution_tier="preview",
+        preview_reductions={"max_symbols": 2},
+    )
+
+    preview_root = study.output_root / ".preview"
+    assert Path(os.environ["ML4T_OUTPUT_DIR"]) == preview_root
+    assert study.storage_root("preview") == preview_root / study.case_study
+    assert resolved.spec["execution_tier"] == "preview"
+
+
+class TestDeclaredMaxTrainSequences:
+    """`modeling.dl.max_train_sequences` is a model property, not a preview knob.
+
+    Before it existed the only source was `preview_reductions`, so a canonical run was
+    necessarily uncapped. On a minute panel that is the difference between drawing
+    hundreds of thousands of training windows and drawing millions of near-identical
+    overlapping ones, which is a different model rather than a slower run.
+    """
+
+    def test_absent_declaration_is_uncapped_so_no_registered_identity_moves(self):
+        assert resolve_dl_max_train_sequences({}) == (0, 0)
+        assert resolve_dl_max_train_sequences(None) == (0, 0)
+
+    def test_a_declaration_caps_a_canonical_run_that_asks_for_no_reduction(self):
+        assert resolve_dl_max_train_sequences({"max_train_sequences": 373_000}) == (373_000, 0)
+
+    def test_the_reduction_is_reported_separately_so_sampling_records_only_a_preview(self):
+        """`sampling` is what the locked holdout runner reads as 'was this reduced'.
+
+        A declared cap must leave it at zero or a holdout could never be run against a
+        capped configuration at all.
+        """
+        effective, reduction = resolve_dl_max_train_sequences({"max_train_sequences": 373_000}, 8)
+        assert (effective, reduction) == (8, 8)
+
+        effective, reduction = resolve_dl_max_train_sequences({"max_train_sequences": 373_000})
+        assert effective == 373_000
+        assert reduction == 0
+
+    def test_a_preview_may_lower_the_cap_but_never_raise_it(self):
+        with pytest.raises(ValueError, match="cannot fit on more windows"):
+            resolve_dl_max_train_sequences({"max_train_sequences": 1_000}, 5_000)
+
+    def test_a_preview_of_an_uncapped_configuration_still_reduces(self):
+        assert resolve_dl_max_train_sequences({}, 8) == (8, 8)
+
+    def test_a_negative_declaration_is_refused_rather_than_read_as_uncapped(self):
+        with pytest.raises(ValueError, match="zero .uncapped. or positive"):
+            resolve_dl_max_train_sequences({"max_train_sequences": -1})
+        with pytest.raises(ValueError, match="zero or positive"):
+            resolve_dl_max_train_sequences({}, -1)
+
+
+class TestDeclaredTrainSequenceStride:
+    """`modeling.dl.train_sequence_stride_horizons` spaces the windows and derives the count.
+
+    The count form fixes the number of windows, so two folds of different length get
+    different spacing and the spacing is whatever the arithmetic lands on. Nasdaq's 750,000
+    drew one window every 5.4 minutes against a 15-minute label, so consecutive training
+    windows carried overlapping labels - a number carried since the original release with
+    nothing deriving it (ml4t/agent-workspace#1015). Declaring the spacing instead makes the
+    one line cover every label, because each label strides its own horizon.
+    """
+
+    @staticmethod
+    def _minute_grid(n: int = 400) -> pl.Series:
+        start = _dt.datetime(2024, 1, 2, 14, 30)
+        return pl.Series("timestamp", [start + _dt.timedelta(minutes=i) for i in range(n)])
+
+    def test_absent_declaration_strides_nothing_so_no_registered_identity_moves(self):
+        assert resolve_dl_train_sequence_stride({}, horizon="15min", dates=None) == 0
+        assert resolve_dl_train_sequence_stride(None, horizon="15min", dates=None) == 0
+
+    def test_one_horizon_on_a_minute_grid_is_the_horizon_in_minutes(self):
+        grid = self._minute_grid()
+        assert (
+            resolve_dl_train_sequence_stride(
+                {"train_sequence_stride_horizons": 1}, horizon="15min", dates=grid
+            )
+            == 15
+        )
+
+    def test_the_same_declaration_covers_every_label_because_each_strides_its_own(self):
+        """One line, four labels. A single count could only be right for one of them."""
+        grid = self._minute_grid()
+        config = {"train_sequence_stride_horizons": 1}
+        strides = {
+            horizon: resolve_dl_train_sequence_stride(config, horizon=horizon, dates=grid)
+            for horizon in ("5min", "15min", "60min")
+        }
+        assert strides == {"5min": 5, "15min": 15, "60min": 60}
+
+    def test_more_than_one_horizon_multiplies_the_spacing(self):
+        grid = self._minute_grid()
+        assert (
+            resolve_dl_train_sequence_stride(
+                {"train_sequence_stride_horizons": 4}, horizon="15min", dates=grid
+            )
+            == 60
+        )
+
+    def test_the_grid_is_measured_not_assumed(self):
+        """nasdaq declares a 15-minute decision cadence and trains on the minute grid.
+
+        Dividing the horizon by the declared cadence would give 1 where the answer is 15.
+        """
+        start = _dt.datetime(2024, 1, 2, 14, 30)
+        quarter_hourly = pl.Series(
+            "timestamp", [start + _dt.timedelta(minutes=15 * i) for i in range(200)]
+        )
+        assert (
+            resolve_dl_train_sequence_stride(
+                {"train_sequence_stride_horizons": 1}, horizon="15min", dates=quarter_hourly
+            )
+            == 1
+        )
+
+    def test_declaring_both_forms_is_refused_rather_than_one_winning_silently(self):
+        with pytest.raises(ValueError, match="declare one"):
+            resolve_dl_train_sequence_stride(
+                {"train_sequence_stride_horizons": 1, "max_train_sequences": 750_000},
+                horizon="15min",
+                dates=self._minute_grid(),
+            )
+
+    def test_a_non_positive_declaration_is_refused(self):
+        with pytest.raises(ValueError, match="positive number of label"):
+            resolve_dl_train_sequence_stride(
+                {"train_sequence_stride_horizons": 0},
+                horizon="15min",
+                dates=self._minute_grid(),
+            )
+
+    def test_a_horizon_with_no_fixed_length_in_seconds_is_refused_not_guessed(self):
+        """A day, a week and a month have no fixed length on a trading calendar."""
+        with pytest.raises(ValueError, match="sub-daily label horizon"):
+            resolve_dl_train_sequence_stride(
+                {"train_sequence_stride_horizons": 1},
+                horizon="21D",
+                dates=self._minute_grid(),
+            )
+
+    def test_nasdaq_declares_the_stride_and_no_count(self):
+        """The case study this exists for, read from the file the run reads."""
+        import yaml
+
+        setup = yaml.safe_load(
+            (
+                Path(__file__).resolve().parents[1]
+                / "case_studies/nasdaq100_microstructure/config/setup.yaml"
+            ).read_text()
+        )
+        dl = setup["modeling"]["dl"]
+        assert dl["train_sequence_stride_horizons"] == 1
+        assert "max_train_sequences" not in dl
+
+
+def test_run_dl_cv_assembles_predictions_in_config_then_epoch_order(tmp_path) -> None:
+    """What the runner returns is what its own incremental files hold, in the same order.
+
+    Post-processing used to hold the whole prediction set three times over: the frame read back
+    from the incremental parquet files, a filtered copy per configuration, and every eligible
+    epoch slice appended to a list that was then concatenated. Reading one slice back at a time
+    removes those copies, and the thing that could go wrong is order: a single pass over the
+    whole set returns file order, not configuration-then-epoch order. Registry identity does
+    not depend on the order - `published_prediction_digest` sorts its row hashes - but every
+    artifact the runner writes does.
+    """
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(0)
+    dates = pd.bdate_range("2024-01-01", periods=120)
+    symbols = ("A", "B", "C", "D", "E", "F", "G", "H", "I", "J")
+    frames = []
+    for symbol in symbols:
+        first = rng.normal(size=len(dates))
+        second = rng.normal(size=len(dates))
+        frames.append(
+            pd.DataFrame(
+                {
+                    "symbol": symbol,
+                    "timestamp": dates,
+                    "f1": first,
+                    "f2": second,
+                    "target": 0.1 * first + 0.05 * second + 0.01 * rng.normal(size=len(dates)),
+                }
+            )
+        )
+    dataset = pd.concat(frames, ignore_index=True)
+    splits = [
+        {
+            "fold": 0,
+            "train_start": dates[0],
+            "train_end": dates[59],
+            "val_start": dates[60],
+            "val_end": dates[79],
+        },
+        {
+            "fold": 1,
+            "train_start": dates[0],
+            "train_end": dates[79],
+            "val_start": dates[80],
+            "val_end": dates[119],
+        },
+    ]
+    config_names = ("nlinear", "lstm_h64")
+    configs = [
+        {
+            "family": "deep_learning",
+            "config_name": name,
+            "n_epochs": 4,
+            "checkpoint_interval": 1,
+            "batch_size": 16,
+            "params": {"architecture": architecture, "lookback": 5},
+        }
+        for name, architecture in zip(config_names, ("nlinear", "lstm"), strict=True)
+    ]
+
+    result = deep_learning.run_dl_cv(
+        dataset,
+        splits,
+        configs=configs,
+        n_features=2,
+        feature_names=["f1", "f2"],
+        label_col="target",
+        date_col="timestamp",
+        entity_col="symbol",
+        device="cpu",
+        register=False,
+        save_dir=tmp_path,
+        seed=0,
+    )
+
+    shards = sorted((tmp_path / "_incremental").glob("*.parquet"))
+    assert shards, "the runner wrote no incremental predictions to reassemble from"
+    persisted = pl.concat(
+        [
+            pl.read_parquet(path).cast({"timestamp": pl.Datetime("us")}, strict=False)
+            for path in shards
+        ],
+        how="diagonal_relaxed",
+    )
+    expected_folds = sorted(int(split["fold"]) for split in splits)
+    parts = []
+    for config_name in config_names:
+        for_config = persisted.filter(pl.col("config") == config_name)
+        for epoch in sorted(for_config["epoch"].unique().to_list()):
+            for_epoch = for_config.filter(pl.col("epoch") == epoch)
+            if sorted(for_epoch["fold_id"].unique().to_list()) == expected_folds:
+                parts.append(for_epoch)
+    assert len(parts) == len(config_names) * 4
+
+    assert result["all_predictions"].equals(pl.concat(parts, how="diagonal_relaxed"))
+
+
+def test_flush_writes_one_shard_per_checkpoint_and_never_rewrites_one(tmp_path) -> None:
+    """A checkpoint's predictions are written once, to a file of their own.
+
+    The sequence runner reaches a checkpoint and hands the writer every checkpoint fitted
+    so far, so a writer that keeps one file per fold rebuilds and rewrites the whole fold
+    at every checkpoint: quadratic in the schedule, and on a nasdaq fold - four million
+    validation rows over twenty checkpoints - about ten gigabytes resident to write a file
+    it had already written nineteen times.
+    """
+    import numpy as np
+
+    from case_studies.utils.registry.store import (
+        flush_fold_predictions,
+        incremental_prediction_shards,
+    )
+
+    incr_dir = tmp_path / "_incremental"
+    incr_dir.mkdir()
+    n = 8
+    dates = np.array(["2024-01-02"] * n, dtype="datetime64[us]")
+    entities = np.array(list("ABCDEFGH"))
+    y_val = np.arange(n, dtype=np.float64)
+
+    reached: dict[int, np.ndarray] = {}
+    written_at: dict[int, int] = {}
+    for epoch in (1, 2, 3):
+        reached[epoch] = np.full(n, float(epoch))
+        flush_fold_predictions(
+            incr_dir, "nlinear", 2, reached, dates, entities, y_val, "timestamp", "symbol"
+        )
+        written_at[epoch] = (incr_dir / f"nlinear_fold2_ep{epoch}.parquet").stat().st_mtime_ns
+
+    shards = incremental_prediction_shards(incr_dir, "nlinear")
+    assert [(stem, epoch) for stem, epoch, _path in shards] == [
+        ("nlinear_fold2", 1),
+        ("nlinear_fold2", 2),
+        ("nlinear_fold2", 3),
+    ]
+    for _stem, epoch, path in shards:
+        frame = pl.read_parquet(path)
+        assert frame["epoch"].unique().to_list() == [epoch]
+        assert path.stat().st_mtime_ns == written_at[epoch], (
+            f"checkpoint {epoch}'s shard was rewritten by a later checkpoint"
+        )
+
+
+def test_run_dl_cv_holds_one_checkpoint_slice_at_a_time(tmp_path, monkeypatch) -> None:
+    """Post-processing reads a checkpoint back, scores it, and drops it.
+
+    It used to reassemble every incremental save into one frame and cut slices out of
+    that, so the whole prediction set stayed resident with a per-config copy and a
+    per-epoch copy beside it.
+    """
+    import weakref
+
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(1)
+    dates = pd.bdate_range("2024-01-01", periods=120)
+    symbols = ("A", "B", "C", "D", "E", "F", "G", "H", "I", "J")
+    frames = []
+    for symbol in symbols:
+        first = rng.normal(size=len(dates))
+        frames.append(
+            pd.DataFrame(
+                {
+                    "symbol": symbol,
+                    "timestamp": dates,
+                    "f1": first,
+                    "f2": rng.normal(size=len(dates)),
+                    "target": 0.1 * first + 0.01 * rng.normal(size=len(dates)),
+                }
+            )
+        )
+    dataset = pd.concat(frames, ignore_index=True)
+    splits = [
+        {
+            "fold": 0,
+            "train_start": dates[0],
+            "train_end": dates[59],
+            "val_start": dates[60],
+            "val_end": dates[79],
+        },
+        {
+            "fold": 1,
+            "train_start": dates[0],
+            "train_end": dates[79],
+            "val_start": dates[80],
+            "val_end": dates[119],
+        },
+    ]
+    configs = [
+        {
+            "family": "deep_learning",
+            "config_name": name,
+            "n_epochs": 4,
+            "checkpoint_interval": 1,
+            "batch_size": 16,
+            "params": {"architecture": architecture, "lookback": 5},
+        }
+        for name, architecture in (("nlinear", "nlinear"), ("lstm_h64", "lstm"))
+    ]
+
+    slices: list[weakref.ReferenceType] = []
+    read_shards = deep_learning._read_prediction_shards
+
+    def tracking_read(paths):
+        frame = read_shards(paths)
+        if frame.height:
+            slices.append(weakref.ref(frame))
+        return frame
+
+    monkeypatch.setattr(deep_learning, "_read_prediction_shards", tracking_read)
+
+    alive_at_each_scoring: list[int] = []
+    score = deep_learning._decision_time_checkpoint_metrics
+
+    def tracking_score(frame, **kwargs):
+        alive_at_each_scoring.append(sum(ref() is not None for ref in slices))
+        return score(frame, **kwargs)
+
+    monkeypatch.setattr(deep_learning, "_decision_time_checkpoint_metrics", tracking_score)
+
+    result = deep_learning.run_dl_cv(
+        dataset,
+        splits,
+        configs=configs,
+        n_features=2,
+        feature_names=["f1", "f2"],
+        label_col="target",
+        date_col="timestamp",
+        entity_col="symbol",
+        device="cpu",
+        register=False,
+        save_dir=tmp_path,
+        seed=0,
+    )
+
+    assert result["all_predictions"].height > 0
+    assert len(alive_at_each_scoring) == len(configs) * 4
+    assert alive_at_each_scoring == [1] * len(alive_at_each_scoring), (
+        f"a scored checkpoint found {max(alive_at_each_scoring)} prediction frames alive; "
+        f"post-processing is holding slices across checkpoints"
+    )
+
+
+def test_checkpoint_sorted_reconstruction_matches_a_whole_frame_sort() -> None:
+    """Sorting each checkpoint gives every published slice the rows a whole-frame sort gave.
+
+    The reconstruction's only reader cuts one checkpoint out of the frame, and inside one
+    checkpoint the `epoch` key is a constant, so the two orders can only differ on rows the
+    published slice does not contain. Sorting the whole frame instead costs about three
+    times its input; on a nasdaq reconstruction that is roughly 21 GB to produce a 7 GB
+    frame.
+    """
+    import numpy as np
+
+    from case_studies.utils.deep_learning import _sorted_by_checkpoint
+
+    rng = np.random.default_rng(4)
+    entities = np.array(["C", "A", "B", "A", "C", "B"])
+    stamps = np.array(
+        ["2024-01-03", "2024-01-02", "2024-01-02", "2024-01-03", "2024-01-02", "2024-01-03"],
+        dtype="datetime64[us]",
+    )
+    frames: dict[int, list[pl.DataFrame]] = {}
+    for checkpoint in (10, 5):
+        for fold in (1, 0):
+            frames.setdefault(checkpoint, []).append(
+                pl.DataFrame(
+                    {
+                        "timestamp": stamps,
+                        "symbol": entities,
+                        "fold_id": fold,
+                        "y_score": rng.normal(size=len(entities)),
+                        "y_true": rng.normal(size=len(entities)),
+                        "config": "nlinear",
+                        "epoch": checkpoint,
+                    }
+                )
+            )
+    whole = pl.concat([part for parts in frames.values() for part in parts]).sort(
+        "symbol", "timestamp", "fold_id", "epoch"
+    )
+    context = SimpleNamespace(entity_col="symbol", date_col="timestamp")
+
+    by_checkpoint = _sorted_by_checkpoint(frames, context)
+
+    assert sorted(by_checkpoint["epoch"].unique().to_list()) == [5, 10]
+    for checkpoint in (5, 10):
+        assert whole.filter(pl.col("epoch") == checkpoint).equals(
+            by_checkpoint.filter(pl.col("epoch") == checkpoint)
+        ), f"checkpoint {checkpoint} publishes a different slice than a whole-frame sort"

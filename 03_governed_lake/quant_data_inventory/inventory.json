@@ -1,0 +1,55 @@
+{
+  "generated_at": "2026-09-24T01:43:47.125047",
+  "root_directory": "/home/da/quant-data",
+  "total_datasets": 9,
+  "total_files": 11819,
+  "total_size_bytes": 161012834305,
+  "total_size_gb": 149.95,
+  "datasets": {
+    "github/download-lots-of-financial-data": {
+      "total_files": 52,
+      "total_size_bytes": 128472,
+      "size_formatted": "0.12 MB"
+    },
+    "github/machine-learning-for-trading": {
+      "total_files": 124,
+      "total_size_bytes": 11870280,
+      "size_formatted": "11.32 MB"
+    },
+    "github/multi-asset-ohlcv": {
+      "total_files": 31,
+      "total_size_bytes": 48394,
+      "size_formatted": "0.05 MB"
+    },
+    "hf/OHLCV-1m": {
+      "total_files": 413,
+      "total_size_bytes": 87719561773,
+      "size_formatted": "81.70 GB"
+    },
+    "hf/binance-futures-ohlcv-2018-2026": {
+      "total_files": 13,
+      "total_size_bytes": 17249550609,
+      "size_formatted": "16.06 GB"
+    },
+    "hf/financial-analyst-data-demo": {
+      "total_files": 10360,
+      "total_size_bytes": 144569545,
+      "size_formatted": "137.87 MB"
+    },
+    "hf/financial-world-model": {
+      "total_files": 28,
+      "total_size_bytes": 50716717151,
+      "size_formatted": "47.23 GB"
+    },
+    "hf/my-cloud-data-lake": {
+      "total_files": 795,
+      "total_size_bytes": 4646618923,
+      "size_formatted": "4.33 GB"
+    },
+    "hf/qtrade-financial-data": {
+      "total_files": 3,
+      "total_size_bytes": 523769158,
+      "size_formatted": "499.51 MB"
+    }
+  }
+}

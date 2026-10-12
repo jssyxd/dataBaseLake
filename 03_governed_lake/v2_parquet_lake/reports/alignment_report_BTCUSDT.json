@@ -1,0 +1,18 @@
+{
+  "timestamp_utc": "2026-10-01T15:00:07.682453+00:00",
+  "asset": "BTCUSDT",
+  "timeframe": "15m",
+  "period": "2023-01",
+  "verdict": "PASS",
+  "alignment_offset_note": "Direct timestamp match",
+  "track_a_rows": 2976,
+  "track_b_rows": 2976,
+  "matched_bars": 2976,
+  "metrics": {
+    "price_correlation": 0.999807,
+    "volume_correlation": 0.625797,
+    "mean_relative_error_pct": 0.1427,
+    "max_relative_error_pct": 3.2493,
+    "p99_relative_error_pct": 0.9881
+  }
+}

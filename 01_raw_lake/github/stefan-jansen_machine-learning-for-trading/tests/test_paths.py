@@ -1,0 +1,343 @@
+"""Tests for utils/paths.py — chapter/case-study path resolution.
+
+Pins the redirection semantics of ML4T_OUTPUT_DIR (test isolation env var)
+and the input validation on the chapter/strategy registries. The redirection
+behavior is load-bearing: every case-study pipeline notebook depends on it
+to avoid overwriting production artifacts during tests.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import stat
+from contextlib import closing
+from pathlib import Path
+
+import pytest
+
+from utils.paths import (
+    CHAPTERS,
+    REPO_ROOT,
+    STRATEGY_IDS,
+    display_path,
+    get_case_study_dir,
+    get_chapter_dir,
+    get_output_dir,
+    registry_readonly_uri,
+    require_chapter_inputs,
+)
+
+# -----------------------------------------------------------------------------
+# display_path
+# -----------------------------------------------------------------------------
+
+
+def test_display_path_makes_repository_path_relative() -> None:
+    assert display_path(REPO_ROOT / "case_studies" / "etfs") == "case_studies/etfs"
+
+
+def test_display_path_redacts_configured_output_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(tmp_path))
+
+    path = tmp_path / "etfs" / "run_log" / "latent_factors.log"
+    assert display_path(path) == "<ML4T_OUTPUT_DIR>/etfs/run_log/latent_factors.log"
+
+
+def test_display_path_preserves_unrelated_and_relative_paths(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(tmp_path / "output"))
+    unrelated = tmp_path / "other" / "artifact.txt"
+
+    assert display_path(unrelated) == str(unrelated)
+    assert display_path("relative/artifact.txt") == "relative/artifact.txt"
+
+
+def test_display_path_stays_relative_through_a_symlinked_subdirectory(
+    tmp_path, monkeypatch
+) -> None:
+    """A `--case-study` worktree reaches run_log/ through a symlink into the artifact store.
+
+    Resolving before relativizing followed that link out of the repository and
+    printed the absolute store path into the committed notebook output.
+    """
+    import utils.paths as paths
+
+    fake_repo = tmp_path / "public-cs"
+    (fake_repo / "case_studies" / "etfs").mkdir(parents=True)
+    store = tmp_path / "artifacts" / "case_studies" / "etfs" / "run_log"
+    store.mkdir(parents=True)
+    (store / "registry.db").touch()
+    (fake_repo / "case_studies" / "etfs" / "run_log").symlink_to(store)
+
+    monkeypatch.setattr(paths, "REPO_ROOT", fake_repo.resolve())
+    monkeypatch.setattr(paths, "_REPO_ROOT_AS_WRITTEN", fake_repo)
+
+    assert (
+        paths.display_path(fake_repo / "case_studies" / "etfs" / "run_log" / "registry.db")
+        == "case_studies/etfs/run_log/registry.db"
+    )
+
+
+def test_chapters_registry_covers_1_through_27() -> None:
+    """The book ships 27 chapters; the registry must enumerate all of them."""
+    assert set(CHAPTERS.keys()) == set(range(1, 28))
+
+
+def test_chapter_directory_names_are_prefixed_by_number() -> None:
+    """Notebook discovery in tests/pm_helpers relies on the NN_ prefix pattern."""
+    for n, dirname in CHAPTERS.items():
+        assert dirname.startswith(f"{n:02d}_"), f"chapter {n} dir {dirname!r} missing prefix"
+
+
+def test_strategy_ids_match_case_studies_dir() -> None:
+    """STRATEGY_IDS should mirror case_studies/<id>/ on disk (structure invariant)."""
+    cs_root = REPO_ROOT / "case_studies"
+    on_disk = {
+        p.name
+        for p in cs_root.iterdir()
+        if p.is_dir() and not p.name.startswith(("_", ".")) and p.name not in {"utils", "config"}
+    }
+    # STRATEGY_IDS is the enforced registry; on_disk may contain extras (ignored_subdirs)
+    # but every declared id must exist on disk.
+    missing = STRATEGY_IDS - on_disk
+    assert not missing, f"STRATEGY_IDS declare non-existent case studies: {missing}"
+
+
+# -----------------------------------------------------------------------------
+# get_chapter_dir
+# -----------------------------------------------------------------------------
+
+
+def test_get_chapter_dir_returns_absolute_path() -> None:
+    path = get_chapter_dir(7)
+    assert path.is_absolute()
+    assert path.name == "07_defining_the_learning_task"
+
+
+def test_get_chapter_dir_rejects_out_of_range() -> None:
+    with pytest.raises(ValueError, match="Invalid chapter"):
+        get_chapter_dir(99)
+
+
+def test_get_chapter_dir_rejects_zero() -> None:
+    with pytest.raises(ValueError, match="Invalid chapter"):
+        get_chapter_dir(0)
+
+
+# -----------------------------------------------------------------------------
+# get_output_dir — test-mode redirection
+# -----------------------------------------------------------------------------
+
+
+def test_get_output_dir_production_path(tmp_path, monkeypatch) -> None:
+    """No env var → writes under the chapter dir."""
+    monkeypatch.delenv("ML4T_OUTPUT_DIR", raising=False)
+    monkeypatch.delenv("ML4T_CHAPTER_OUTPUT_DIR", raising=False)
+
+    # Use create=False to avoid making a directory in the real repo.
+    path = get_output_dir(7, "etfs", create=False)
+    assert path == get_chapter_dir(7) / "output" / "etfs"
+
+
+def test_get_output_dir_redirects_under_ml4t_output_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.delenv("ML4T_CHAPTER_OUTPUT_DIR", raising=False)
+
+    path = get_output_dir(7, "etfs")
+    assert path == tmp_path / "ch07_etfs"
+    assert path.exists()
+
+
+def test_get_output_dir_chapter_specific_env_wins_over_global(tmp_path, monkeypatch) -> None:
+    """ML4T_CHAPTER_OUTPUT_DIR should take precedence over ML4T_OUTPUT_DIR."""
+    ch_dir = tmp_path / "chapter-only"
+    global_dir = tmp_path / "global"
+    monkeypatch.setenv("ML4T_CHAPTER_OUTPUT_DIR", str(ch_dir))
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(global_dir))
+
+    path = get_output_dir(11, "etfs")
+    assert path.parent == ch_dir
+    assert not str(path).startswith(str(global_dir))
+
+
+def test_get_output_dir_zero_pads_chapter_number(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.delenv("ML4T_CHAPTER_OUTPUT_DIR", raising=False)
+
+    assert get_output_dir(3, "x").name == "ch03_x"
+    assert get_output_dir(11, "x").name == "ch11_x"
+
+
+# -----------------------------------------------------------------------------
+# get_case_study_dir — test-mode redirection
+# -----------------------------------------------------------------------------
+
+
+def test_get_case_study_dir_production_path(monkeypatch) -> None:
+    """No env var → writes under case_studies/{id}/."""
+    monkeypatch.delenv("ML4T_OUTPUT_DIR", raising=False)
+
+    path = get_case_study_dir("etfs", create=False)
+    assert path == REPO_ROOT / "case_studies" / "etfs"
+
+
+def test_get_case_study_dir_redirects_under_ml4t_output_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(tmp_path))
+
+    path = get_case_study_dir("etfs")
+    assert path == tmp_path / "etfs"
+    assert path.exists()
+
+
+def test_get_case_study_dir_create_false_does_not_mkdir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(tmp_path))
+
+    path = get_case_study_dir("etfs", create=False)
+    assert not path.exists()
+
+
+def test_get_case_study_dir_create_true_is_idempotent(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ML4T_OUTPUT_DIR", str(tmp_path))
+
+    first = get_case_study_dir("etfs", create=True)
+    second = get_case_study_dir("etfs", create=True)
+    assert first == second
+    assert first.exists()
+
+
+class TestRequireChapterInputs:
+    """A notebook whose chapter inputs are absent must stop, not substitute defaults.
+
+    Chapter outputs are gitignored, so a fresh clone or worktree has none of them.
+    06_itch_intraday_patterns used to fall back to well-known tickers, run to
+    completion, exit 0 and write a page with four figures reduced to none; the
+    provenance stamp applied and the commit hooks passed, so the empty page was
+    committable.
+    """
+
+    def test_present_inputs_pass_silently(self, tmp_path: Path) -> None:
+        present = tmp_path / "trades.parquet"
+        present.write_bytes(b"")
+
+        require_chapter_inputs({present: "05_itch_trading_activity"})
+
+    def test_a_missing_input_raises_and_names_its_producer(self, tmp_path: Path) -> None:
+        missing = tmp_path / "trade_summary.parquet"
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            require_chapter_inputs({missing: "05_itch_trading_activity"})
+
+        message = str(excinfo.value)
+        assert "trade_summary.parquet" in message
+        assert "05_itch_trading_activity" in message
+
+    def test_every_missing_input_is_reported_not_just_the_first(self, tmp_path: Path) -> None:
+        """A reader who fixes one and re-runs should not discover the next one by hand."""
+        first = tmp_path / "trade_summary.parquet"
+        second = tmp_path / "trades.parquet"
+        third = tmp_path / "messages"
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            require_chapter_inputs(
+                {
+                    first: "05_itch_trading_activity",
+                    second: "05_itch_trading_activity",
+                    third: "01_itch_parser",
+                }
+            )
+
+        message = str(excinfo.value)
+        assert "trade_summary.parquet" in message
+        assert "trades.parquet" in message
+        assert "01_itch_parser" in message
+
+    def test_a_present_input_is_not_reported_alongside_a_missing_one(self, tmp_path: Path) -> None:
+        present = tmp_path / "trades.parquet"
+        present.write_bytes(b"")
+        missing = tmp_path / "trade_summary.parquet"
+
+        with pytest.raises(FileNotFoundError) as excinfo:
+            require_chapter_inputs(
+                {present: "05_itch_trading_activity", missing: "05_itch_trading_activity"}
+            )
+
+        assert "trades.parquet" not in str(excinfo.value)
+
+    def test_a_directory_input_counts_as_present(self, tmp_path: Path) -> None:
+        """01_itch_parser produces a directory of per-message-type partitions."""
+        messages = tmp_path / "messages"
+        messages.mkdir()
+
+        require_chapter_inputs({messages: "01_itch_parser"})
+
+
+# -----------------------------------------------------------------------------
+# registry_readonly_uri
+# -----------------------------------------------------------------------------
+
+
+def _wal_registry(directory: Path) -> Path:
+    """Write a WAL-mode registry with one committed row, as the case studies do."""
+    path = directory / "registry.db"
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("CREATE TABLE training_runs (config_name TEXT)")
+        db.execute("INSERT INTO training_runs VALUES ('ols')")
+        db.commit()
+    return path
+
+
+def _unwritable(directory: Path) -> None:
+    """Strip the write bits the way scripts/download_artifacts.py installs a bundle."""
+    for path in [directory, *directory.rglob("*")]:
+        path.chmod(path.stat().st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+
+class TestRegistryReadonlyUri:
+    def test_a_live_registry_is_read_through_the_write_ahead_log(self, tmp_path: Path) -> None:
+        """A row committed after the reader connects is in the -wal file, not the main file."""
+        registry = _wal_registry(tmp_path)
+        with closing(sqlite3.connect(registry)) as writer:
+            reader = sqlite3.connect(registry_readonly_uri(registry), uri=True)
+            with closing(reader):
+                writer.execute("INSERT INTO training_runs VALUES ('ridge')")
+                writer.commit()
+
+                names = {row[0] for row in reader.execute("SELECT config_name FROM training_runs")}
+
+        assert names == {"ols", "ridge"}
+
+    def test_a_live_registry_connection_cannot_write(self, tmp_path: Path) -> None:
+        registry = _wal_registry(tmp_path)
+
+        with (
+            closing(sqlite3.connect(registry_readonly_uri(registry), uri=True)) as reader,
+            pytest.raises(sqlite3.OperationalError),
+        ):
+            reader.execute("INSERT INTO training_runs VALUES ('gbm')")
+
+    def test_a_question_mark_in_the_path_is_not_read_as_uri_syntax(self, tmp_path: Path) -> None:
+        """A raw f-string would end the path at the `?` and open a different file, or none."""
+        awkward = tmp_path / "run?log#1"
+        awkward.mkdir()
+        registry = _wal_registry(awkward)
+
+        with closing(sqlite3.connect(registry_readonly_uri(registry), uri=True)) as reader:
+            names = {row[0] for row in reader.execute("SELECT config_name FROM training_runs")}
+
+        assert names == {"ols"}
+
+    def test_an_installed_bundle_is_readable_from_an_unwritable_tree(self, tmp_path: Path) -> None:
+        """A WAL reader must create the -shm sidecar unless told the file cannot change."""
+        run_log = tmp_path / "run_log"
+        run_log.mkdir()
+        registry = _wal_registry(run_log)
+        _unwritable(run_log)
+
+        try:
+            with closing(sqlite3.connect(registry_readonly_uri(registry), uri=True)) as reader:
+                names = {row[0] for row in reader.execute("SELECT config_name FROM training_runs")}
+        finally:
+            for path in [run_log, *run_log.rglob("*")]:
+                path.chmod(path.stat().st_mode | stat.S_IWUSR)
+
+        assert names == {"ols"}

@@ -1,0 +1,504 @@
+{
+  "repo": "https://github.com/stefan-jansen/machine-learning-for-trading",
+  "scope": "data/ and scripts/ via git sparse-checkout",
+  "total_files": 124,
+  "total_size_bytes": 11870280,
+  "files": [
+    {
+      "file": "uv.lock",
+      "size_bytes": 1017675
+    },
+    {
+      "file": "sitecustomize.py",
+      "size_bytes": 10063
+    },
+    {
+      "file": "pyproject.toml",
+      "size_bytes": 13389
+    },
+    {
+      "file": "matplotlibrc",
+      "size_bytes": 3247
+    },
+    {
+      "file": "docker-compose.yml",
+      "size_bytes": 14222
+    },
+    {
+      "file": "README.md",
+      "size_bytes": 29094
+    },
+    {
+      "file": "LICENSE",
+      "size_bytes": 1075
+    },
+    {
+      "file": ".verified-notebooks.tsv",
+      "size_bytes": 34
+    },
+    {
+      "file": ".pre-commit-config.yaml",
+      "size_bytes": 4826
+    },
+    {
+      "file": ".gitignore",
+      "size_bytes": 8781
+    },
+    {
+      "file": ".env.example",
+      "size_bytes": 5325
+    },
+    {
+      "file": "scripts/verify_installation.py",
+      "size_bytes": 28165
+    },
+    {
+      "file": "scripts/verify_artifact_sidecars.py",
+      "size_bytes": 5542
+    },
+    {
+      "file": "scripts/sync_notebooks.py",
+      "size_bytes": 13269
+    },
+    {
+      "file": "scripts/sync_ch16_real_strategy_parity.py",
+      "size_bytes": 13407
+    },
+    {
+      "file": "scripts/record_artifact_supersession.py",
+      "size_bytes": 9049
+    },
+    {
+      "file": "scripts/prove_us_firm_latent_interface.py",
+      "size_bytes": 8220
+    },
+    {
+      "file": "scripts/prove_us_equities_fold_major.py",
+      "size_bytes": 10104
+    },
+    {
+      "file": "scripts/prove_sp500_options_interface.py",
+      "size_bytes": 11929
+    },
+    {
+      "file": "scripts/prove_crypto_interface.py",
+      "size_bytes": 18062
+    },
+    {
+      "file": "scripts/prove_cme_futures_interface.py",
+      "size_bytes": 9109
+    },
+    {
+      "file": "scripts/probe_latent_identities.py",
+      "size_bytes": 1077
+    },
+    {
+      "file": "scripts/pre_run_gate.py",
+      "size_bytes": 32546
+    },
+    {
+      "file": "scripts/migrate_training_identity.py",
+      "size_bytes": 1643
+    },
+    {
+      "file": "scripts/migrate_fold_renumbering.py",
+      "size_bytes": 2578
+    },
+    {
+      "file": "scripts/migrate_backtest_rekey.py",
+      "size_bytes": 5850
+    },
+    {
+      "file": "scripts/download_artifacts.py",
+      "size_bytes": 17098
+    },
+    {
+      "file": "scripts/create_experiment.py",
+      "size_bytes": 4621
+    },
+    {
+      "file": "scripts/check_supersedes_literals.py",
+      "size_bytes": 62774
+    },
+    {
+      "file": "scripts/check_input_artifact_vintage.py",
+      "size_bytes": 18472
+    },
+    {
+      "file": "scripts/build_benchmark.py",
+      "size_bytes": 15115
+    },
+    {
+      "file": "scripts/artifact_audit.py",
+      "size_bytes": 10828
+    },
+    {
+      "file": "scripts/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "file": "scripts/README.md",
+      "size_bytes": 2718
+    },
+    {
+      "file": "data/exceptions.py",
+      "size_bytes": 8859
+    },
+    {
+      "file": "data/download_all.py",
+      "size_bytes": 18983
+    },
+    {
+      "file": "data/__init__.py",
+      "size_bytes": 6080
+    },
+    {
+      "file": "data/README.md",
+      "size_bytes": 23552
+    },
+    {
+      "file": "data/prediction_markets/loader.py",
+      "size_bytes": 2935
+    },
+    {
+      "file": "data/prediction_markets/download.py",
+      "size_bytes": 20145
+    },
+    {
+      "file": "data/prediction_markets/config.yaml",
+      "size_bytes": 2973
+    },
+    {
+      "file": "data/prediction_markets/README.md",
+      "size_bytes": 3441
+    },
+    {
+      "file": "data/macro/loader.py",
+      "size_bytes": 3345
+    },
+    {
+      "file": "data/macro/download_alfred.py",
+      "size_bytes": 7562
+    },
+    {
+      "file": "data/macro/download.py",
+      "size_bytes": 9583
+    },
+    {
+      "file": "data/macro/dataset_card.py",
+      "size_bytes": 11643
+    },
+    {
+      "file": "data/macro/dataset_card.ipynb",
+      "size_bytes": 44517
+    },
+    {
+      "file": "data/macro/config.yaml",
+      "size_bytes": 3248
+    },
+    {
+      "file": "data/macro/README.md",
+      "size_bytes": 3455
+    },
+    {
+      "file": "data/fx/loader.py",
+      "size_bytes": 3981
+    },
+    {
+      "file": "data/fx/README.md",
+      "size_bytes": 3792
+    },
+    {
+      "file": "data/fx/market/download.py",
+      "size_bytes": 8311
+    },
+    {
+      "file": "data/fx/market/dataset_card.py",
+      "size_bytes": 9813
+    },
+    {
+      "file": "data/fx/market/dataset_card.ipynb",
+      "size_bytes": 43513
+    },
+    {
+      "file": "data/fx/market/config.yaml",
+      "size_bytes": 1474
+    },
+    {
+      "file": "data/futures/loader.py",
+      "size_bytes": 15211
+    },
+    {
+      "file": "data/futures/README.md",
+      "size_bytes": 5674
+    },
+    {
+      "file": "data/futures/positioning/cot_download.py",
+      "size_bytes": 4836
+    },
+    {
+      "file": "data/futures/positioning/README.md",
+      "size_bytes": 2816
+    },
+    {
+      "file": "data/futures/market/futures_specs.yaml",
+      "size_bytes": 21670
+    },
+    {
+      "file": "data/futures/market/download.py",
+      "size_bytes": 27222
+    },
+    {
+      "file": "data/futures/market/dataset_card.py",
+      "size_bytes": 15149
+    },
+    {
+      "file": "data/futures/market/dataset_card.ipynb",
+      "size_bytes": 52914
+    },
+    {
+      "file": "data/futures/market/databento_individual.py",
+      "size_bytes": 9886
+    },
+    {
+      "file": "data/futures/market/config.yaml",
+      "size_bytes": 9024
+    },
+    {
+      "file": "data/futures/market/cme_contract_specs.md",
+      "size_bytes": 6990
+    },
+    {
+      "file": "data/factors/loader.py",
+      "size_bytes": 2790
+    },
+    {
+      "file": "data/factors/ff_download.py",
+      "size_bytes": 4876
+    },
+    {
+      "file": "data/factors/dataset_card.py",
+      "size_bytes": 8842
+    },
+    {
+      "file": "data/factors/dataset_card.ipynb",
+      "size_bytes": 44939
+    },
+    {
+      "file": "data/factors/aqr_download.py",
+      "size_bytes": 4587
+    },
+    {
+      "file": "data/factors/README.md",
+      "size_bytes": 4230
+    },
+    {
+      "file": "data/factors/aqr/source/ESG_efficient_frontier_portfolios_vF.xlsx",
+      "size_bytes": 215209
+    },
+    {
+      "file": "data/etfs/loader.py",
+      "size_bytes": 5115
+    },
+    {
+      "file": "data/etfs/README.md",
+      "size_bytes": 4394
+    },
+    {
+      "file": "data/etfs/market/download.py",
+      "size_bytes": 10654
+    },
+    {
+      "file": "data/etfs/market/dataset_card.py",
+      "size_bytes": 10136
+    },
+    {
+      "file": "data/etfs/market/dataset_card.ipynb",
+      "size_bytes": 43853
+    },
+    {
+      "file": "data/etfs/market/config.yaml",
+      "size_bytes": 6366
+    },
+    {
+      "file": "data/equities/loader.py",
+      "size_bytes": 67811
+    },
+    {
+      "file": "data/equities/README.md",
+      "size_bytes": 6227
+    },
+    {
+      "file": "data/equities/positioning/form4_download.py",
+      "size_bytes": 6838
+    },
+    {
+      "file": "data/equities/positioning/README.md",
+      "size_bytes": 3330
+    },
+    {
+      "file": "data/equities/positioning/13f_download.py",
+      "size_bytes": 28063
+    },
+    {
+      "file": "data/equities/market/algoseek_convert.py",
+      "size_bytes": 28836
+    },
+    {
+      "file": "data/equities/market/us_equities/download.py",
+      "size_bytes": 4102
+    },
+    {
+      "file": "data/equities/market/us_equities/dataset_card.py",
+      "size_bytes": 10095
+    },
+    {
+      "file": "data/equities/market/us_equities/dataset_card.ipynb",
+      "size_bytes": 42897
+    },
+    {
+      "file": "data/equities/market/us_equities/README.md",
+      "size_bytes": 2014
+    },
+    {
+      "file": "data/equities/market/sp500/sp500.csv",
+      "size_bytes": 472362
+    },
+    {
+      "file": "data/equities/market/sp500/materialize_options.py",
+      "size_bytes": 16651
+    },
+    {
+      "file": "data/equities/market/sp500/daily_bars.parquet",
+      "size_bytes": 8621364
+    },
+    {
+      "file": "data/equities/market/sp500/build_options_straddles_raw.py",
+      "size_bytes": 7212
+    },
+    {
+      "file": "data/equities/market/sp500/build_options_eda.py",
+      "size_bytes": 3411
+    },
+    {
+      "file": "data/equities/market/microstructure/nasdaq_itch_download.py",
+      "size_bytes": 3505
+    },
+    {
+      "file": "data/equities/market/microstructure/mbo_download.py",
+      "size_bytes": 11697
+    },
+    {
+      "file": "data/equities/market/microstructure/iex_download.py",
+      "size_bytes": 8979
+    },
+    {
+      "file": "data/equities/market/microstructure/dataset_card.py",
+      "size_bytes": 15822
+    },
+    {
+      "file": "data/equities/market/microstructure/dataset_card.ipynb",
+      "size_bytes": 51143
+    },
+    {
+      "file": "data/equities/market/microstructure/build_taq_slim.py",
+      "size_bytes": 1768
+    },
+    {
+      "file": "data/equities/market/microstructure/README.md",
+      "size_bytes": 8043
+    },
+    {
+      "file": "data/equities/market/microstructure/MBO_DOWNLOAD.md",
+      "size_bytes": 4587
+    },
+    {
+      "file": "data/equities/fundamentals/xbrl_download.py",
+      "size_bytes": 15492
+    },
+    {
+      "file": "data/equities/fundamentals/filings_download.py",
+      "size_bytes": 18105
+    },
+    {
+      "file": "data/equities/fundamentals/README.md",
+      "size_bytes": 4634
+    },
+    {
+      "file": "data/equities/firm_characteristics/download.py",
+      "size_bytes": 17626
+    },
+    {
+      "file": "data/equities/firm_characteristics/dataset_card.py",
+      "size_bytes": 8543
+    },
+    {
+      "file": "data/equities/firm_characteristics/dataset_card.ipynb",
+      "size_bytes": 47011
+    },
+    {
+      "file": "data/equities/firm_characteristics/README.md",
+      "size_bytes": 3888
+    },
+    {
+      "file": "data/crypto/loader.py",
+      "size_bytes": 7938
+    },
+    {
+      "file": "data/crypto/README.md",
+      "size_bytes": 4529
+    },
+    {
+      "file": "data/crypto/onchain/download.py",
+      "size_bytes": 7081
+    },
+    {
+      "file": "data/crypto/onchain/README.md",
+      "size_bytes": 2910
+    },
+    {
+      "file": "data/crypto/market/download.py",
+      "size_bytes": 18872
+    },
+    {
+      "file": "data/crypto/market/dataset_card.py",
+      "size_bytes": 12892
+    },
+    {
+      "file": "data/crypto/market/dataset_card.ipynb",
+      "size_bytes": 57334
+    },
+    {
+      "file": "data/crypto/market/config.yaml",
+      "size_bytes": 1904
+    },
+    {
+      "file": "data/alternative/loader.py",
+      "size_bytes": 7934
+    },
+    {
+      "file": "data/alternative/__init__.py",
+      "size_bytes": 0
+    },
+    {
+      "file": "data/alternative/README.md",
+      "size_bytes": 1459
+    },
+    {
+      "file": "data/alternative/text/README.md",
+      "size_bytes": 3055
+    },
+    {
+      "file": "data/alternative/news/fnspid_download.py",
+      "size_bytes": 4885
+    },
+    {
+      "file": "data/alternative/news/bloomberg_download.py",
+      "size_bytes": 4722
+    },
+    {
+      "file": "data/alternative/news/README.md",
+      "size_bytes": 4214
+    }
+  ]
+}

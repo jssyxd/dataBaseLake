@@ -1,0 +1,292 @@
+[
+  {
+    "path": "BTC-PERPETUAL.DERIBIT\\2020-04-01T00-00-00-245000000Z_2020-04-01T00-24-29-054000000Z.parquet",
+    "rows": 500000,
+    "size_bytes": 5284667,
+    "row_groups": 1,
+    "columns": [
+      "action",
+      "side",
+      "price",
+      "size",
+      "order_id",
+      "flags",
+      "sequence",
+      "ts_event",
+      "ts_init"
+    ],
+    "null_counts": {
+      "action": 0,
+      "side": 0,
+      "price": 0,
+      "size": 0,
+      "order_id": 0,
+      "flags": 0,
+      "sequence": 0,
+      "ts_event": 0,
+      "ts_init": 0
+    },
+    "metadata": {
+      "instrument_id": "BTC-PERPETUAL.DERIBIT",
+      "price_precision": "1",
+      "size_precision": "0",
+      "rows_per_group": "500000"
+    },
+    "sample_price_range": [
+      6421.5,
+      6473.0
+    ],
+    "sample_size_range": [
+      10.0,
+      361430.0
+    ],
+    "actions": {
+      "1": 100
+    },
+    "sides": {
+      "2": 100
+    }
+  },
+  {
+    "path": "BTCUSDT-PERP.BINANCE\\2020-02-01T00-00-03-429000000Z_2020-02-01T00-28-26-448000000Z.parquet",
+    "rows": 500000,
+    "size_bytes": 5603198,
+    "row_groups": 1,
+    "columns": [
+      "action",
+      "side",
+      "price",
+      "size",
+      "order_id",
+      "flags",
+      "sequence",
+      "ts_event",
+      "ts_init"
+    ],
+    "null_counts": {
+      "action": 0,
+      "side": 0,
+      "price": 0,
+      "size": 0,
+      "order_id": 0,
+      "flags": 0,
+      "sequence": 0,
+      "ts_event": 0,
+      "ts_init": 0
+    },
+    "metadata": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "price_precision": "2",
+      "size_precision": "3",
+      "rows_per_group": "500000"
+    },
+    "sample_price_range": [
+      9366.32,
+      9376.18
+    ],
+    "sample_size_range": [
+      0.001,
+      15.465
+    ],
+    "actions": {
+      "1": 100
+    },
+    "sides": {
+      "2": 100
+    }
+  },
+  {
+    "path": "ETHUSDT-PERP.BINANCE\\2020-02-01T00-00-03-349000000Z_2020-02-01T01-13-31-535000000Z.parquet",
+    "rows": 500000,
+    "size_bytes": 6378618,
+    "row_groups": 1,
+    "columns": [
+      "action",
+      "side",
+      "price",
+      "size",
+      "order_id",
+      "flags",
+      "sequence",
+      "ts_event",
+      "ts_init"
+    ],
+    "null_counts": {
+      "action": 0,
+      "side": 0,
+      "price": 0,
+      "size": 0,
+      "order_id": 0,
+      "flags": 0,
+      "sequence": 0,
+      "ts_event": 0,
+      "ts_init": 0
+    },
+    "metadata": {
+      "instrument_id": "ETHUSDT-PERP.BINANCE",
+      "price_precision": "2",
+      "size_precision": "3",
+      "rows_per_group": "500000"
+    },
+    "sample_price_range": [
+      180.14,
+      182.04
+    ],
+    "sample_size_range": [
+      0.0,
+      974.52
+    ],
+    "actions": {
+      "1": 99,
+      "3": 1
+    },
+    "sides": {
+      "2": 100
+    }
+  },
+  {
+    "path": "BTC-PERPETUAL.DERIBIT\\2020\\04\\2020-04-01T00-00-00-245000000Z_2020-04-01T00-24-29-054000000Z.parquet",
+    "rows": 500000,
+    "size_bytes": 5284667,
+    "row_groups": 1,
+    "columns": [
+      "action",
+      "side",
+      "price",
+      "size",
+      "order_id",
+      "flags",
+      "sequence",
+      "ts_event",
+      "ts_init"
+    ],
+    "null_counts": {
+      "action": 0,
+      "side": 0,
+      "price": 0,
+      "size": 0,
+      "order_id": 0,
+      "flags": 0,
+      "sequence": 0,
+      "ts_event": 0,
+      "ts_init": 0
+    },
+    "metadata": {
+      "instrument_id": "BTC-PERPETUAL.DERIBIT",
+      "price_precision": "1",
+      "size_precision": "0",
+      "rows_per_group": "500000"
+    },
+    "sample_price_range": [
+      6421.5,
+      6473.0
+    ],
+    "sample_size_range": [
+      10.0,
+      361430.0
+    ],
+    "actions": {
+      "1": 100
+    },
+    "sides": {
+      "2": 100
+    }
+  },
+  {
+    "path": "BTCUSDT-PERP.BINANCE\\2020\\02\\2020-02-01T00-00-03-429000000Z_2020-02-01T00-28-26-448000000Z.parquet",
+    "rows": 500000,
+    "size_bytes": 5603198,
+    "row_groups": 1,
+    "columns": [
+      "action",
+      "side",
+      "price",
+      "size",
+      "order_id",
+      "flags",
+      "sequence",
+      "ts_event",
+      "ts_init"
+    ],
+    "null_counts": {
+      "action": 0,
+      "side": 0,
+      "price": 0,
+      "size": 0,
+      "order_id": 0,
+      "flags": 0,
+      "sequence": 0,
+      "ts_event": 0,
+      "ts_init": 0
+    },
+    "metadata": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "price_precision": "2",
+      "size_precision": "3",
+      "rows_per_group": "500000"
+    },
+    "sample_price_range": [
+      9366.32,
+      9376.18
+    ],
+    "sample_size_range": [
+      0.001,
+      15.465
+    ],
+    "actions": {
+      "1": 100
+    },
+    "sides": {
+      "2": 100
+    }
+  },
+  {
+    "path": "ETHUSDT-PERP.BINANCE\\2020\\02\\2020-02-01T00-00-03-349000000Z_2020-02-01T01-13-31-535000000Z.parquet",
+    "rows": 500000,
+    "size_bytes": 6378618,
+    "row_groups": 1,
+    "columns": [
+      "action",
+      "side",
+      "price",
+      "size",
+      "order_id",
+      "flags",
+      "sequence",
+      "ts_event",
+      "ts_init"
+    ],
+    "null_counts": {
+      "action": 0,
+      "side": 0,
+      "price": 0,
+      "size": 0,
+      "order_id": 0,
+      "flags": 0,
+      "sequence": 0,
+      "ts_event": 0,
+      "ts_init": 0
+    },
+    "metadata": {
+      "instrument_id": "ETHUSDT-PERP.BINANCE",
+      "price_precision": "2",
+      "size_precision": "3",
+      "rows_per_group": "500000"
+    },
+    "sample_price_range": [
+      180.14,
+      182.04
+    ],
+    "sample_size_range": [
+      0.0,
+      974.52
+    ],
+    "actions": {
+      "1": 99,
+      "3": 1
+    },
+    "sides": {
+      "2": 100
+    }
+  }
+]

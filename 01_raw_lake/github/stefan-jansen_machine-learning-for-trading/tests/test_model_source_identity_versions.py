@@ -1,0 +1,152 @@
+"""Semantic implementation versions for model families that used to hash source files."""
+
+# ruff: noqa: E402  # pytest.importorskip must run before the torch-backed imports
+
+from __future__ import annotations
+
+from copy import deepcopy
+
+import pytest
+
+pytest.importorskip("torch")
+
+from case_studies.utils import causal, deep_learning, tabular_dl
+from case_studies.utils.latent_factors import adapter as latent_adapter
+from case_studies.utils.registry import training_hash_from_spec
+
+PINNED_SEQUENCE_RUNNER = 1
+# 2 since #767 (174154ad) corrected where the sequence path fills a missing feature. 3 since
+# #1090: sequence windows are laid out on the panel's expected periods instead of on a symbol's
+# own row order, an absent period keeps its cell and is described by two declared features, and
+# eligibility became two measured bounds where it had been an undeclared zero tolerance. Both the
+# contents of a window and the set of windows changed. The pin moves with the version
+# deliberately: it exists to make a bump a decision someone writes down, not to prevent one.
+PINNED_SEQUENCE_PREPARATION = 3
+PINNED_SEQUENCE_STATE = 1
+PINNED_TABM_RUNNER = 1
+PINNED_TABM_STATE = 1
+PINNED_LATENT_ADAPTER = 1
+# 1 -> 2 on 2026-09-10: the block-permutation refutation compares HAC t-statistics rather
+# than raw effects (ml4t/agent-workspace#1120). Permuting the treatment frees it from the
+# controls, so var(T_res) inflates and every placebo effect is shrunk toward zero by
+# arithmetic - the permutation distribution was narrower than the null it stood for, and
+# the bias ran one way, toward "Passes". refutation_p is a registered value, so the change
+# has to move the identity; causal rows have no migration path and refit.
+PINNED_CAUSAL_RUNNER = 2
+
+
+def _training_spec(source_identity: dict) -> dict:
+    return {
+        "identity_version": 3,
+        "resolved_spec_schema": "ml4t.resolved-spec/v1",
+        "execution_tier": "canonical",
+        "family": "fixture",
+        "label": "target",
+        "seed": 42,
+        "computation": {"source_identity": source_identity},
+        "provenance": {},
+    }
+
+
+def test_sequence_identity_is_declared_and_architecture_scoped() -> None:
+    assert deep_learning.SEQUENCE_RUNNER_VERSION == PINNED_SEQUENCE_RUNNER
+    assert deep_learning.SEQUENCE_PREPARATION_VERSION == PINNED_SEQUENCE_PREPARATION
+    assert deep_learning.SEQUENCE_STATE_VERSION == PINNED_SEQUENCE_STATE
+
+    nlinear = deep_learning._sequence_source_identity(
+        {"library": "pytorch", "params": {"architecture": "nlinear"}}
+    )
+    lstm = deep_learning._sequence_source_identity(
+        {"library": "pytorch", "params": {"architecture": "lstm"}}
+    )
+    darts = deep_learning._sequence_source_identity(
+        {"library": "darts", "params": {"architecture": "tsmixer"}}
+    )
+
+    # Literals, not the pins above: the duplication is the guard. A bump has to be written
+    # down in both places, so it cannot ride along with an unrelated edit to one of them.
+    assert nlinear == {
+        "sequence_runner": 1,
+        "sequence_preparation": 3,
+        "sequence_state": 1,
+        "backend": "pytorch/v1",
+        "architecture": "nlinear/v1",
+    }
+    assert nlinear != lstm
+    assert nlinear != darts
+
+
+def test_sequence_identity_rejects_an_unversioned_architecture() -> None:
+    with pytest.raises(ValueError, match="implementation version"):
+        deep_learning._sequence_source_identity(
+            {"library": "pytorch", "params": {"architecture": "unknown"}}
+        )
+
+
+def test_tabm_identity_is_declared() -> None:
+    assert tabular_dl.TABM_RUNNER_VERSION == PINNED_TABM_RUNNER
+    assert tabular_dl.TABM_STATE_VERSION == PINNED_TABM_STATE
+    assert tabular_dl._tabm_source_identity() == {
+        "tabm_runner": 1,
+        "tabm_state": 1,
+    }
+
+
+# `sae` is at 2, not 1: `run_sae_fold_with_library` omitted `batch_size` and the library read the
+# absent value as one full-panel batch, so results fitted before that fix are a different
+# computation. The declared versions live in `case_studies/utils/latent_factors/versions.py`, which
+# both the resolved and the legacy registration paths read, and this pins what they claim.
+PINNED_LATENT_MODELS = {"pca": 1, "ipca": 1, "cae": 1, "sae": 2, "sdf": 1}
+
+
+@pytest.mark.parametrize("model", ["pca", "ipca", "cae", "sae", "sdf"])
+def test_latent_identity_is_declared_and_model_scoped(model: str) -> None:
+    assert latent_adapter.LATENT_ADAPTER_VERSION == PINNED_LATENT_ADAPTER
+    version = PINNED_LATENT_MODELS[model]
+    assert latent_adapter._source_identity(model) == {
+        "latent_adapter": 1,
+        "latent_model": f"{model}/v{version}",
+    }
+
+
+def test_causal_identity_is_declared() -> None:
+    assert causal.CAUSAL_RUNNER_VERSION == PINNED_CAUSAL_RUNNER
+    assert causal._causal_source_identity() == {"causal_runner": 2}
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        lambda: deep_learning._sequence_source_identity(
+            {"library": "pytorch", "params": {"architecture": "nlinear"}}
+        ),
+        tabular_dl._tabm_source_identity,
+        lambda: latent_adapter._source_identity("pca"),
+        causal._causal_source_identity,
+    ],
+)
+def test_a_declared_version_change_moves_the_training_hash(identity) -> None:
+    original = identity()
+    changed = deepcopy(original)
+    first = next(iter(changed))
+    changed[first] = int(changed[first]) + 1
+
+    assert training_hash_from_spec(_training_spec(original)) != training_hash_from_spec(
+        _training_spec(changed)
+    )
+
+
+def test_active_source_identities_contain_no_file_digests() -> None:
+    identities = [
+        deep_learning._sequence_source_identity(
+            {"library": "pytorch", "params": {"architecture": "nlinear"}}
+        ),
+        tabular_dl._tabm_source_identity(),
+        latent_adapter._source_identity("pca"),
+        causal._causal_source_identity(),
+    ]
+    assert not any(
+        isinstance(value, str) and len(value) == 64
+        for identity in identities
+        for value in identity.values()
+    )

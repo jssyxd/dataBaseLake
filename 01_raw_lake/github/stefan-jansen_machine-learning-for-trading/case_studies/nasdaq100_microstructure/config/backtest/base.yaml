@@ -1,0 +1,35 @@
+account:
+  allow_short_selling: true
+execution:
+  execution_price: quote_side
+  mark_price: price
+  execution_mode: next_bar
+commission:
+  model: percentage
+  rate: 0.0005
+slippage:
+  model: percentage
+  rate: 0.0002
+calendar:
+  calendar: NYSE
+  timezone: UTC
+  # The bar the engine fills and monitors on, NOT how often the strategy acts. Decisions are
+  # taken on the prediction panel's own timestamps thinned by `labels.rebalance_step`, so this
+  # is the resolution the position is watched at between two decisions - which is what a stop
+  # or a take-profit needs and what a fifteen-minute feed cannot give it. It is also what makes
+  # the fill match the label: `execution_mode: next_bar` on a minute feed enters at t+1 minute,
+  # and the label is priced from the VWAP of t+1 (ml4t/agent-workspace#187).
+  data_frequency: 1m
+feed:
+  timestamp_col: timestamp
+  entity_col: symbol
+  price_col: close
+  open_col: open
+  high_col: high
+  low_col: low
+  close_col: close
+  volume_col: volume
+  bid_col: bid_open
+  ask_col: ask_open
+metadata:
+  case_study: nasdaq100_microstructure

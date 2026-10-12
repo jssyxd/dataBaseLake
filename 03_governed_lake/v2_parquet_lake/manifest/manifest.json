@@ -1,0 +1,481 @@
+{
+  "$schema": "./manifest.schema.json",
+  "database_name": "Centralized Multi-Asset Quant Backtest Lake",
+  "version": "2.1.0",
+  "last_updated_utc": "2026-10-01T18:13:22.546445+00:00",
+  "storage_specification": {
+    "primary_format": "parquet",
+    "compression": "zstd",
+    "compression_level": 7,
+    "row_group_target": 100000,
+    "query_engine_compatibility": [
+      "Polars",
+      "DuckDB",
+      "PyArrow",
+      "Pandas",
+      "C++ Arrow"
+    ]
+  },
+  "governance_contract": {
+    "time_index_definition": "UTC Unix Timestamp int64 milliseconds (Left-aligned Bar Open Time)",
+    "timestamp_unit": "milliseconds",
+    "alignment_rule": "left_open_time",
+    "lookahead_bias_guarantee": true,
+    "supported_timeframes": [
+      "1m",
+      "15m",
+      "1h",
+      "4h",
+      "1d"
+    ],
+    "mandatory_columns": [
+      {
+        "name": "timestamp",
+        "type": "int64",
+        "description": "Bar open time in milliseconds since UTC Unix Epoch"
+      },
+      {
+        "name": "datetime",
+        "type": "string",
+        "description": "Human-readable ISO UTC datetime 'YYYY-MM-DD HH:MM:SS'"
+      },
+      {
+        "name": "open",
+        "type": "float64",
+        "description": "Bar opening price"
+      },
+      {
+        "name": "high",
+        "type": "float64",
+        "description": "Bar highest traded price"
+      },
+      {
+        "name": "low",
+        "type": "float64",
+        "description": "Bar lowest traded price"
+      },
+      {
+        "name": "close",
+        "type": "float64",
+        "description": "Bar closing price"
+      },
+      {
+        "name": "volume",
+        "type": "float64",
+        "description": "Traded contract or base asset volume"
+      },
+      {
+        "name": "quote_volume",
+        "type": "float64",
+        "description": "Traded quote volume in USDT (Crypto specific)"
+      },
+      {
+        "name": "taker_buy_volume",
+        "type": "float64",
+        "description": "Taker aggressive buy volume for CVD (Crypto specific)"
+      }
+    ]
+  },
+  "catalog": {
+    "crypto_perpetuals": {
+      "market": "Binance USDT-Margined Futures (UM)",
+      "symbols_count": 24,
+      "established_threshold": "Listed >= 1 year as of 2026-10-02",
+      "timeframes": [
+        "1m",
+        "15m",
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "symbols": {
+        "BTCUSDT": {
+          "path": "crypto/futures_um/BTCUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "ETHUSDT": {
+          "path": "crypto/futures_um/ETHUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "ZECUSDT": {
+          "path": "crypto/futures_um/ZECUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "SOLUSDT": {
+          "path": "crypto/futures_um/SOLUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "MOVRUSDT": {
+          "path": "crypto/futures_um/MOVRUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "NEARUSDT": {
+          "path": "crypto/futures_um/NEARUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "XRPUSDT": {
+          "path": "crypto/futures_um/XRPUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "QNTUSDT": {
+          "path": "crypto/futures_um/QNTUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "DOGEUSDT": {
+          "path": "crypto/futures_um/DOGEUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "SUIUSDT": {
+          "path": "crypto/futures_um/SUIUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "UNIUSDT": {
+          "path": "crypto/futures_um/UNIUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "WLDUSDT": {
+          "path": "crypto/futures_um/WLDUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "1000PEPEUSDT": {
+          "path": "crypto/futures_um/1000PEPEUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "BNBUSDT": {
+          "path": "crypto/futures_um/BNBUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "AAVEUSDT": {
+          "path": "crypto/futures_um/AAVEUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "ADAUSDT": {
+          "path": "crypto/futures_um/ADAUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "LINKUSDT": {
+          "path": "crypto/futures_um/LINKUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "ONDOUSDT": {
+          "path": "crypto/futures_um/ONDOUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "AVAXUSDT": {
+          "path": "crypto/futures_um/AVAXUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "ARKUSDT": {
+          "path": "crypto/futures_um/ARKUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "HBARUSDT": {
+          "path": "crypto/futures_um/HBARUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "XLMUSDT": {
+          "path": "crypto/futures_um/XLMUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "FILUSDT": {
+          "path": "crypto/futures_um/FILUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "STXUSDT": {
+          "path": "crypto/futures_um/STXUSDT/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        }
+      }
+    },
+    "us_equities": {
+      "market": "US Equities & Broad Market ETFs",
+      "symbols_count": 3,
+      "symbols": {
+        "SPY": {
+          "name": "SPDR S&P 500 ETF Trust",
+          "path": "us_equities/SPY/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "QQQ": {
+          "name": "Invesco QQQ Trust (Nasdaq 100)",
+          "path": "us_equities/QQQ/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "TQQQ": {
+          "name": "ProShares UltraPro QQQ 3x Leveraged",
+          "path": "us_equities/TQQQ/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        }
+      }
+    },
+    "us_futures": {
+      "market": "CME Equity Index Continuous Futures",
+      "symbols_count": 2,
+      "symbols": {
+        "ES": {
+          "name": "E-mini S&P 500 Continuous Futures",
+          "path": "us_futures/ES/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        },
+        "NQ": {
+          "name": "E-mini Nasdaq 100 Continuous Futures",
+          "path": "us_futures/NQ/",
+          "timeframes": [
+            "1m",
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ]
+        }
+      }
+    },
+    "global_futures": {
+      "index_futures": {
+        "market": "Global Regional Equity Index Futures",
+        "symbols": {
+          "NK225": {
+            "name": "日经225指数期货（大阪/新加坡交易所，亚太核心）",
+            "path": "global_futures/index_futures/NK225/",
+            "timeframes": [
+              "1m",
+              "15m",
+              "1h",
+              "4h",
+              "1d"
+            ]
+          },
+          "HSI": {
+            "name": "香港恒生指数期货",
+            "path": "global_futures/index_futures/HSI/",
+            "timeframes": [
+              "1m",
+              "15m",
+              "1h",
+              "4h",
+              "1d"
+            ]
+          },
+          "FDAX": {
+            "name": "德国DAX指数期货（欧洲股市领头羊）",
+            "path": "global_futures/index_futures/FDAX/",
+            "timeframes": [
+              "1m",
+              "15m",
+              "1h",
+              "4h",
+              "1d"
+            ]
+          }
+        }
+      },
+      "commodities_and_rates": {
+        "market": "Global Macro Commodities & Fixed Income",
+        "symbols": {
+          "CL": {
+            "name": "WTI原油期货连续（全球能源核心）",
+            "path": "global_futures/commodities_and_rates/CL/",
+            "timeframes": [
+              "1m",
+              "15m",
+              "1h",
+              "4h",
+              "1d"
+            ]
+          },
+          "GC": {
+            "name": "COMEX黄金期货连续（终极避险与抗通胀资产）",
+            "path": "global_futures/commodities_and_rates/GC/",
+            "timeframes": [
+              "1m",
+              "15m",
+              "1h",
+              "4h",
+              "1d"
+            ]
+          },
+          "ZN": {
+            "name": "美国10年期国债期货连续（全球资产定价之锚）",
+            "path": "global_futures/commodities_and_rates/ZN/",
+            "timeframes": [
+              "1m",
+              "15m",
+              "1h",
+              "4h",
+              "1d"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "last_updated": "2026-10-12T13:25:44.850904+00:00"
+}

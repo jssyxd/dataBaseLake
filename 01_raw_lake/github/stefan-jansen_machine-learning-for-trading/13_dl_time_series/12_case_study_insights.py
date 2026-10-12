@@ -1,0 +1,1316 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: tags,-all
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.3
+#   kernelspec:
+#     display_name: Python 3 (ipykernel)
+#     language: python
+#     name: python3
+# ---
+
+# %% [markdown]
+# # What the architectures did across the book's case studies
+#
+# **Docker image**: `ml4t`
+#
+# Every notebook in this chapter demonstrated an architecture on one split of one
+# panel, and each said in its own words that a single split cannot rank
+# architectures. This notebook is where the ranking question is actually asked. It
+# reads the registry - the stored results of walk-forward runs on whichever case
+# studies carry deep-learning pipelines - and compares LSTM, NLinear, TSMixer,
+# TCN and PatchTST against each other and against the linear baseline of Chapter 11,
+# the gradient-boosted models of Chapter 12, and the tabular network TabM.
+#
+# Nothing here is trained. Every number is read from runs that already happened, which
+# is why this is the only place in the chapter where a comparison spans datasets, and
+# why the per-case-study detail lives elsewhere, in
+# `case_studies/{cs}/11_model_analysis.py`.
+#
+# **Two things to hold on to while reading.** Each comparison is restricted to
+# configurations that covered the same folds and the same number of days, so a model
+# evaluated on an easier or shorter window cannot win by that alone. And a spread of
+# per-fold results is a description of the folds, not a confidence interval - the HAC
+# intervals on daily IC are the uncertainty estimate, and the fold violins are not.
+#
+# **Learning objectives**
+#
+# - Read an average daily Spearman IC with a HAC 95 % interval and say what the
+#   interval does and does not cover.
+# - Trace the architecture-by-case-study coverage map, and notice which cells are
+#   empty before reading the ones that are full.
+# - Read per-fold distributions, checkpoint trajectories and conformal coverage as
+#   diagnostics of a run rather than as scores.
+# - Compare deep learning against the strongest tabular family on shared timestamps,
+#   and say why a point-estimate difference is not a test.
+# - Place each architecture in its class - recurrent, MLP-style, convolutional,
+#   attention - and ask whether the class explains more than the individual model.
+#
+# **Book reference**: Section 13.7 (A practical framework) and Section 13.9
+# (Case study insights).
+#
+# **Prerequisites**: each case study's per-architecture training notebooks
+# (`dl_lstm.py`, `dl_nlinear.py`, `dl_tsmixer.py`, `dl_tcn.py`, `dl_patchtst.py`)
+# have populated that study's `run_log/registry.db` for the `deep_learning` family. The
+# linear, GBM, and TabM baselines come from Ch11-Ch12 pipelines.
+
+# %%
+"""Case Study Insights: Deep Learning cross-case-study registry aggregation."""
+
+import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import polars as pl
+
+# ml4t.diagnostic dlopens cudart; load torch first so its bundled CUDA
+# runtime wins. Same precedence pattern as case_studies/utils/model_analysis.py.
+import torch  # noqa: F401
+from IPython.display import Markdown, display
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.lines import Line2D
+
+# %%
+from case_studies.utils.analytics import (
+    CASE_STUDY_IDS,
+    DATASET_META,
+    PRIMARY_LABELS,
+    SHORT_NAMES,
+)
+from case_studies.utils.insight_chapter import (
+    RegistrySelectionError,
+    collect_checkpoint_fold_trajectories,
+    collect_fold_ic_per_cs,
+    collect_grid_per_cs,
+    collect_multi_label_per_cs,
+    collect_rank1_per_cs,
+    compare_ic_on_shared_timestamps,
+    conformal_coverage_for_selected_prediction,
+    plot_cross_cs_forest,
+    plot_multi_label_horizon,
+    plot_per_fold_violin,
+)
+from case_studies.utils.model_analysis import (
+    load_daily_metrics_series,
+    load_metrics_from_registry,
+)
+from utils.reproducibility import set_global_seeds
+from utils.style import COLORS, ml4t_diverging, ml4t_palette, show_with_alt
+
+# %% [markdown]
+# One warning is silenced, by message and module rather than by a blanket filter.
+# polars cannot verify that a frame is sorted once `by` groups are given, and says so
+# on every grouped `join_asof`. `case_studies/utils/conformal.py` sorts by entity and
+# step itself immediately before each of those joins, which is exactly the
+# precondition the warning is about, so the warning reports a check polars could not
+# perform rather than a problem. Every other warning, from that module or anywhere
+# else, still reaches the output.
+
+# %%
+warnings.filterwarnings(
+    "ignore",
+    message="Sortedness of columns cannot be checked",
+    category=UserWarning,
+    module=r".*case_studies\.utils\.conformal",
+)
+
+# %% tags=["parameters"]
+SEED = 42
+FAMILY = "deep_learning"
+TABULAR_BASELINES = ("linear", "gbm", "tabular_dl")
+CONFORMAL_LEVEL = 0.90
+
+# %%
+set_global_seeds(SEED)
+
+
+# %% [markdown]
+# **Architecture helper**: maps registry `config_name` values to the display
+# names used across every downstream table and figure so the four LSTM
+# variants collapse to a single `LSTM` row and the per-architecture grids
+# stay consistent.
+
+
+# %%
+def architecture(config_name: str) -> str:
+    """Display name for a DL config_name (LSTM variants collapse to 'LSTM')."""
+    if config_name.startswith("lstm"):
+        return "LSTM"
+    return {"nlinear": "NLinear", "tsmixer": "TSMixer", "tcn": "TCN", "patchtst": "PatchTST"}.get(
+        config_name,
+        config_name.upper(),
+    )
+
+
+# %% [markdown]
+# Architectural classes support the aggregate comparison, while the complete
+# grid loader keeps missing architectures explicit.
+
+# %%
+ARCH_CLASS = {
+    "LSTM": "recurrent",
+    "NLinear": "MLP-style",
+    "TSMixer": "MLP-style",
+    "TCN": "convolutional",
+    "PatchTST": "attention",
+}
+
+dl_grid = collect_grid_per_cs(
+    CASE_STUDY_IDS,
+    FAMILY,
+)
+
+
+# %% [markdown]
+# Every comparison below ranks only configurations that covered the same folds and the
+# same number of days, so a model evaluated on a shorter or easier window cannot come
+# out ahead on that account.
+
+# %% [markdown]
+# ## 1. Scope and Coverage
+#
+# The DL grid varies across the case studies - not every architecture trains
+# on every panel, and US Firm Characteristics (monthly cross-section) carries
+# no DL family at all. The headline metric is the average daily Spearman IC
+# with HAC 95 % confidence interval on each case study's primary label
+# (`prediction_metrics.ic_mean_daily`, `ic_ci_lo`, `ic_ci_hi`, `ic_t_hac`).
+# The linear (Ch11), GBM (Ch12), and TabM (`tabular_dl`, Ch12) baselines are
+# loaded so the §5 delta is computable.
+
+# %%
+coverage_rows = []
+for cs in CASE_STUDY_IDS:
+    primary = PRIMARY_LABELS[cs]
+    dl = dl_grid.filter(pl.col("case_study") == cs)
+    if dl.is_empty():
+        coverage_rows.append(
+            {
+                "case_study": SHORT_NAMES[cs],
+                "primary_label": primary,
+                "dl_archs": "-",
+                "n_dl_configs": 0,
+            }
+        )
+        continue
+    archs = sorted({architecture(c) for c in dl["config_name"].unique().to_list()})
+    coverage_rows.append(
+        {
+            "case_study": SHORT_NAMES[cs],
+            "primary_label": primary,
+            "dl_archs": ", ".join(archs),
+            "n_dl_configs": dl["config_name"].n_unique(),
+        }
+    )
+
+coverage_df = pl.DataFrame(coverage_rows)
+print("DL architecture coverage per case study (primary label):")
+coverage_df
+
+# %%
+# Architecture × CS availability matrix at the primary label
+all_archs_sorted = ["LSTM", "NLinear", "TSMixer", "TCN", "PatchTST"]
+avail_rows = []
+for cs in CASE_STUDY_IDS:
+    dl = dl_grid.filter(pl.col("case_study") == cs)
+    if dl.is_empty():
+        for arch in all_archs_sorted:
+            avail_rows.append({"short_name": SHORT_NAMES[cs], "architecture": arch, "ic": None})
+        continue
+    by_arch = (
+        dl.with_columns(
+            architecture=pl.col("config_name").map_elements(architecture, return_dtype=pl.Utf8)
+        )
+        # maintain_order on every group_by in this notebook: polars does not preserve
+        # input order across a group_by, so five rendered cells - two tables and three
+        # computed sentences naming case studies - came back in a different order on
+        # each execution with identical data underneath. Nothing about the values
+        # changed, which is what made it hard to see: a real movement and a reshuffle
+        # look the same in a diff.
+        .group_by("architecture", maintain_order=True)
+        .agg(pl.col("ic_mean_daily").max().alias("ic"))
+    )
+    arch_to_ic = dict(by_arch.iter_rows())
+    for arch in all_archs_sorted:
+        avail_rows.append(
+            {
+                "short_name": SHORT_NAMES[cs],
+                "architecture": arch,
+                "ic": arch_to_ic.get(arch),
+            }
+        )
+
+avail_df = pl.DataFrame(avail_rows)
+avail_pivot = avail_df.pivot(index="short_name", on="architecture", values="ic").sort("short_name")
+print(
+    "Highest-IC DL configuration per (case study × architecture) at the primary label "
+    "(blank = no run eligible for the comparison):"
+)
+avail_pivot.select(["short_name", *all_archs_sorted])
+
+# %% [markdown]
+# Architecture coverage is computed from full-day, exact-fold candidates. A
+# missing family stays missing rather than being filled with a shorter-span or
+# stale candidate.
+
+# %%
+architecture_coverage = (
+    dl_grid.with_columns(
+        architecture=pl.col("config_name").map_elements(architecture, return_dtype=pl.Utf8)
+    )
+    .group_by("architecture", maintain_order=True)
+    .agg(n_case_studies=pl.col("case_study").n_unique())
+    # Ties break on the name. NLinear and LSTM both cover 8 and TCN and PatchTST both
+    # cover 3, and `sort` does not keep tied rows in input order, so without this the
+    # table, the chart's bar order and the sentence built from it permute between runs.
+    .sort(["n_case_studies", "architecture"], descending=[True, False])
+)
+missing_dl = [
+    SHORT_NAMES[cs] for cs in CASE_STUDY_IDS if cs not in set(dl_grid["case_study"].to_list())
+]
+display(
+    Markdown(
+        "**Computed coverage.** "
+        f"{dl_grid['case_study'].n_unique()} of {len(CASE_STUDY_IDS)} case studies have a "
+        f"complete DL candidate; missing: {', '.join(missing_dl) or 'none'}."
+    )
+)
+architecture_coverage
+
+# %% [markdown]
+# ## 2. Cross-CS Forest of Highest-IC DL Configurations
+#
+# For each DL-covered case study, the architecture and configuration with
+# the highest average daily IC on the primary label is plotted with its HAC
+# 95 % CI. Filled markers indicate $|t_{HAC}| > 2$ (CI excludes zero); open
+# markers indicate the CI overlaps zero.
+
+# %%
+dl_rank1 = collect_rank1_per_cs(
+    CASE_STUDY_IDS,
+    family=FAMILY,
+)
+dl_rank1_display = dl_rank1.with_columns(
+    architecture=pl.col("config_name").map_elements(architecture, return_dtype=pl.Utf8),
+)
+print("Highest-IC DL configuration per case study (primary label, average daily IC ± HAC 95 % CI):")
+dl_rank1_display.select(
+    "short_name",
+    "label",
+    "architecture",
+    "config_name",
+    pl.col("ic_mean_daily").round(4).alias("ic"),
+    pl.col("ic_ci_lo").round(4).alias("ci_lo"),
+    pl.col("ic_ci_hi").round(4).alias("ci_hi"),
+    pl.col("ic_t_hac").round(2).alias("t_hac"),
+    pl.col("ic_n_days").cast(pl.Int64).alias("n_days"),
+)
+
+# %%
+fig, forest_ax = plot_cross_cs_forest(
+    dl_rank1,
+    family=FAMILY,
+    title="Highest-IC DL per case study, average daily IC with HAC 95 % CI",
+)
+forest_ax.set_xlabel("Average daily IC (HAC 95 % CI)")
+show_with_alt(
+    fig,
+    "A forest plot, one row per case study, ordered so the largest value is at the top. Each row "
+    "is a horizontal HAC 95 percent interval around the daily-pooled IC of that case study's "
+    "highest-IC deep-learning configuration, with a dashed vertical line at zero. The marker is "
+    "filled where the absolute HAC t-statistic exceeds two and hollow where it does not; the "
+    "legend gives that distinction.",
+)
+
+# %%
+n_dl_total = dl_rank1.height
+n_sig = int((dl_rank1["ic_t_hac"].abs() > 2.0).sum())
+print(f"DL CI excludes zero ({{|t_HAC|>2}}) on {n_sig} of {n_dl_total} DL-covered case studies.")
+
+# %%
+dl_clear_names = dl_rank1.filter(pl.col("ic_t_hac").abs() > 2)["short_name"].to_list()
+dl_overlap_names = dl_rank1.filter(pl.col("ic_t_hac").abs() <= 2)["short_name"].to_list()
+display(
+    Markdown(
+        f"**Computed DL inference.** The HAC interval excludes zero for {len(dl_clear_names)} "
+        f"of {dl_rank1.height} selected rows ({', '.join(dl_clear_names) or 'none'}) and "
+        f"overlaps zero for {', '.join(dl_overlap_names) or 'none'}."
+    )
+)
+
+# %% [markdown]
+# ## 3. Within-Family Comparison
+#
+# Three subsections trace the architecture grid: the highest IC by architecture
+# inside each case study (3a), the aggregate count of which architecture
+# achieves the highest IC (3b), and the per-checkpoint IC trajectory of the
+# highest-IC configuration on each case study (3c).
+
+# %% [markdown]
+# ### 3a. Architecture × case-study heatmap
+#
+# Within each case study, the highest IC achieved by each architecture is shown as a
+# heatmap cell. A blank cell means no eligible run, which covers two situations: the
+# architecture was never trained on that case study, or it was but its runs did not
+# cover the same folds and the same number of days as the rest of the row. Both are
+# coverage facts and neither is a low score, so they stay blank rather than being
+# filled in.
+
+# %%
+arch_cols = all_archs_sorted
+cs_labels = avail_pivot["short_name"].to_list()
+matrix_values = avail_pivot.select(arch_cols).to_numpy()
+
+fig, ax = plt.subplots(figsize=(7.5, 4.5))
+finite_vals = matrix_values[np.isfinite(matrix_values.astype(float))]
+vmax = float(np.nanmax(np.abs(finite_vals))) if finite_vals.size else 0.05
+masked = np.ma.array(matrix_values.astype(float), mask=~np.isfinite(matrix_values.astype(float)))
+cmap = LinearSegmentedColormap.from_list("ml4t_diverging", ml4t_diverging())
+cmap.set_bad(color=COLORS["silver_muted"])
+im = ax.imshow(masked, cmap=cmap, vmin=-vmax, vmax=vmax, aspect="auto")
+ax.set_xticks(np.arange(len(arch_cols)))
+ax.set_xticklabels(arch_cols)
+ax.set_yticks(np.arange(len(cs_labels)))
+ax.set_yticklabels(cs_labels)
+for i in range(len(cs_labels)):
+    for j in range(len(arch_cols)):
+        v = matrix_values[i, j]
+        if v is not None and np.isfinite(v):
+            ax.text(
+                j,
+                i,
+                f"{v:+.3f}",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color=COLORS["silver"] if abs(v) > 0.6 * vmax else COLORS["neutral"],
+            )
+        else:
+            ax.text(j, i, "-", ha="center", va="center", fontsize=8, color=COLORS["silver_muted"])
+ax.set_title("Highest-IC DL configuration per (case study × architecture)")
+fig.colorbar(im, ax=ax, fraction=0.045, pad=0.04, label="Average daily IC")
+show_with_alt(
+    fig,
+    "A heatmap with one row per case study and one column per architecture, on a diverging colour "
+    "scale centred at zero and symmetric about the largest absolute value present. Each cell is "
+    "the highest daily IC that architecture reached on that case study, printed in the cell "
+    "as well as shaded; greyed-out cells are pairs with no run eligible for the comparison, "
+    "whether because the architecture was not trained there or because its runs did not "
+    "cover the same folds and days. A colour bar gives the scale.",
+)
+
+# %%
+leader_text = ", ".join(
+    f"{row['short_name']}: {row['architecture']}"
+    for row in dl_rank1_display.sort("short_name").iter_rows(named=True)
+)
+display(
+    Markdown(
+        f"**Highest-IC architecture per case study.** {leader_text}. Blank heatmap cells are "
+        "coverage gaps, and they are counted as such rather than as a low score."
+    )
+)
+
+# %% [markdown]
+# ### 3b. Aggregate: which architecture achieves the highest IC most often
+#
+# Counting across DL-covered case studies, how often does each architecture
+# achieve the highest IC at the primary label? The bar is annotated with the
+# mean IC of the case studies where the architecture achieves the highest IC
+# (the table above also reports the min/max across those case studies) -
+# magnitudes matter as much as counts.
+
+# %%
+arch_top_counts = (
+    dl_rank1_display.group_by("architecture", maintain_order=True)
+    .agg(
+        n_cs_with_highest_ic=pl.col("case_study").len(),
+        ic_mean=pl.col("ic_mean_daily").mean(),
+        ic_min=pl.col("ic_mean_daily").min(),
+        ic_max=pl.col("ic_mean_daily").max(),
+    )
+    .sort(["n_cs_with_highest_ic", "architecture"], descending=[True, False])
+)
+print("Architecture achieving the highest IC at the primary label (count across DL-covered CSs):")
+arch_top_counts
+
+# %%
+fig, ax = plt.subplots(figsize=(6.5, 3.5))
+ax.bar(
+    arch_top_counts["architecture"].to_list(),
+    arch_top_counts["n_cs_with_highest_ic"].to_list(),
+    color=COLORS["blue"],
+)
+ax.set_xlabel("Architecture")
+ax.set_ylabel("Winning case studies")
+ax.set_title("DL architectures achieving the highest IC per case study (count)")
+ax.set_ylim(0, float(arch_top_counts["n_cs_with_highest_ic"].max()) + 0.6)
+for i, (n, ic) in enumerate(
+    zip(
+        arch_top_counts["n_cs_with_highest_ic"].to_list(),
+        arch_top_counts["ic_mean"].to_list(),
+    )
+):
+    ax.text(i, n + 0.1, f"IC={ic:+.3f}", ha="center", fontsize=9)
+show_with_alt(
+    fig,
+    "A bar chart with one bar per deep-learning architecture, its height the number of case "
+    "studies where that architecture reached the highest IC, sorted from most to fewest. Each bar "
+    "is annotated above with the mean IC across those case studies, so a tall bar built on small "
+    "ICs is visible as such.",
+)
+
+# %%
+architecture_count_text = ", ".join(
+    f"{row['architecture']}: {row['n_cs_with_highest_ic']}"
+    for row in arch_top_counts.iter_rows(named=True)
+)
+display(
+    Markdown(
+        f"**Computed architecture counts.** {architecture_count_text}. Counts describe the "
+        "point-estimate leaders; they do not establish superiority across panels."
+    )
+)
+
+# %% [markdown]
+# ### 3c. Checkpoint dynamics
+#
+# For each case study's highest-IC DL configuration, the per-checkpoint
+# (epoch) IC trajectory is plotted with the IQR band across folds. Peaked
+# curves identify clear early-stopping value; flat curves indicate the
+# optimization landscape is benign across the budget.
+
+# %%
+checkpoint_folds = collect_checkpoint_fold_trajectories(dl_rank1)
+ckpt_df = (
+    checkpoint_folds.group_by(
+        ["short_name", "config_name", "checkpoint_value"], maintain_order=True
+    )
+    .agg(
+        ic_median=pl.col("ic").median(),
+        ic_q25=pl.col("ic").quantile(0.25),
+        ic_q75=pl.col("ic").quantile(0.75),
+    )
+    .filter(pl.col("checkpoint_value").is_not_null())
+    .with_columns(
+        architecture=pl.col("config_name").map_elements(architecture, return_dtype=pl.Utf8),
+    )
+    .sort(["short_name", "checkpoint_value"])
+)
+
+# %%
+if not ckpt_df.is_empty():
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    palette = ml4t_palette(5, categorical=True)
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    line_styles = ["-", "--", "-.", ":"]
+    cs_sorted = sorted(ckpt_df["short_name"].unique().to_list())
+    for i, cs in enumerate(cs_sorted):
+        sub = ckpt_df.filter(pl.col("short_name") == cs).sort("checkpoint_value")
+        x = sub["checkpoint_value"].to_numpy()
+        med = sub["ic_median"].to_numpy()
+        q25 = sub["ic_q25"].to_numpy()
+        q75 = sub["ic_q75"].to_numpy()
+        color = palette[i % len(palette)]
+        arch = sub["architecture"].to_list()[0]
+        ax.fill_between(x, q25, q75, color=color, alpha=0.10)
+        ax.plot(
+            x,
+            med,
+            color=color,
+            marker=markers[i],
+            linestyle=line_styles[i % len(line_styles)],
+            label=f"{cs} ({arch})",
+            linewidth=1.6,
+            markersize=4,
+            alpha=0.9,
+        )
+    ax.axhline(0, color=COLORS["neutral"], linewidth=0.7, linestyle="--")
+    ax.set_xlabel("Training epoch (checkpoint)")
+    ax.set_ylabel("Per-fold IC median (IQR band)")
+    ax.set_title("Checkpoint dynamics for the highest-IC DL configuration per case study")
+    ax.legend(loc="best", frameon=False, fontsize=8, ncol=2)
+    show_with_alt(
+        fig,
+        "One set of axes carrying a line per case study: the per-fold median IC against the "
+        "training epoch of the saved checkpoint, each line shaded with its interquartile band and "
+        "drawn in its own colour, marker and dash pattern. A dashed horizontal line marks zero, "
+        "and the legend names each case study with its architecture.",
+    )
+else:
+    print("No DL checkpoint data available.")
+
+# %%
+trajectory_peaks = (
+    ckpt_df.sort("ic_median", descending=True)
+    .group_by("short_name", maintain_order=True)
+    .first()
+    .select("short_name", "architecture", "checkpoint_value", "ic_median")
+    .sort(["checkpoint_value", "short_name"])
+)
+peak_text = ", ".join(
+    f"{row['short_name']}: {int(row['checkpoint_value'])}"
+    for row in trajectory_peaks.iter_rows(named=True)
+)
+display(Markdown(f"**Computed checkpoint peaks.** Selected median-IC peaks occur at {peak_text}."))
+
+# %% [markdown]
+# ## 4. Stability and Uncertainty
+#
+# Average daily IC with HAC CI is the headline metric. Per-fold IC is the
+# stability diagnostic; conformal coverage is the calibration diagnostic.
+
+# %% [markdown]
+# ### 4a. Per-fold IC distribution
+#
+# For each DL-covered case study, the per-fold IC distribution of the highest-
+# IC configuration is shown as a box-plus-scatter, sorted left-to-right by
+# headline IC.
+
+# %%
+dl_fold = collect_fold_ic_per_cs(dl_rank1)
+dl_fold_summary = (
+    dl_fold.group_by(["case_study", "short_name"], maintain_order=True)
+    .agg(
+        n_folds=pl.col("ic").count(),
+        median=pl.col("ic").median(),
+        std=pl.col("ic").std(),
+        pct_positive=(pl.col("ic") > 0).mean(),
+    )
+    .sort("median", descending=True)
+)
+print("Per-fold IC summary for the highest-IC DL configuration (primary label):")
+dl_fold_summary
+
+# %%
+order = dl_rank1.sort("ic_mean_daily", descending=True)["short_name"].to_list()
+fig, _ = plot_per_fold_violin(
+    dl_fold,
+    order=order,
+    title="Per-fold IC of the highest-IC DL configuration, primary label",
+)
+show_with_alt(
+    fig,
+    "A box plot with one box per case study, ordered by average daily IC, showing the "
+    "distribution of per-fold Spearman ICs for that case study's highest-IC deep-learning "
+    "configuration. Every individual fold is also drawn as a semi-transparent point over its box, "
+    "and a dashed horizontal line marks zero.",
+)
+
+# %% [markdown]
+# Fold summaries diagnose stability only. Inference remains attached to the
+# chronological daily IC series, not to the small collection of fold summaries.
+
+# %%
+positive_majority = dl_fold_summary.filter(pl.col("pct_positive") > 0.5)["short_name"].to_list()
+display(
+    Markdown(
+        f"**Computed fold diagnostic.** {len(positive_majority)} of "
+        f"{dl_fold_summary.height} selected DL rows have a positive-fold majority: "
+        f"{', '.join(positive_majority) or 'none'}."
+    )
+)
+
+# %% [markdown]
+# ### 4b. Cross-fitted OOF fold calibration at the 90 % nominal level
+#
+# The width measured here is the one the `conformal_weighted` allocator sizes
+# positions with: calibrated per symbol on every residual known at `t - h`,
+# where `h` is the sizing lag in data steps - `max(1, label horizon)`, one step
+# even where the horizon is zero, because the position was chosen before the row
+# that records its outcome - falling back to a quantile
+# pooled over every symbol where one has too few residuals of its own. A
+# decision is covered when its absolute residual falls inside that half-width.
+# A well-calibrated DL signal sits near the diagonal (empirical coverage =
+# nominal level); points below indicate the interval is too narrow, points
+# above that it is too wide. Per-CS interval width is reported in units of the
+# standard deviation of the outcomes it was measured against, so case studies
+# trading different return magnitudes stay comparable.
+#
+# Read it as a diagnostic of residual dispersion, not a guarantee. Split
+# conformal's finite-sample coverage needs the calibration and evaluation
+# residuals to be exchangeable and return residuals are not, each OOF fold can
+# come from a different fitted model, and nothing in the allocation path reads
+# an interval or a coverage level.
+
+# %%
+conformal_rows = []
+conformal_unavailable = []
+for selected in dl_rank1.iter_rows(named=True):
+    cs = selected["case_study"]
+    try:
+        df = conformal_coverage_for_selected_prediction(selected)
+    except RegistrySelectionError as error:
+        if "fewer than 30 rows" not in str(error):
+            raise
+        conformal_unavailable.append(SHORT_NAMES[cs])
+        continue
+    sub = df.filter(pl.col("nominal_level") == CONFORMAL_LEVEL)
+    if sub.is_empty():
+        continue
+    r = sub.row(0, named=True)
+    conformal_rows.append(
+        {
+            "short_name": SHORT_NAMES[cs],
+            "config_name": r["config_name"],
+            "architecture": architecture(r["config_name"]),
+            "nominal_level": r["nominal_level"],
+            "empirical_coverage": r["empirical_coverage"],
+            "interval_width_frac_std": r["mean_interval_width_frac_std"],
+            "n_test": r["n_test"],
+        }
+    )
+
+conformal_df = pl.DataFrame(conformal_rows).sort("short_name")
+print(
+    f"Cross-fitted OOF calibration at the {CONFORMAL_LEVEL:.0%} nominal level; "
+    f"insufficient rows: {', '.join(conformal_unavailable) or 'none'}"
+)
+conformal_df.select(
+    "short_name",
+    "architecture",
+    pl.col("empirical_coverage").round(3).alias("empirical_cov"),
+    pl.col("interval_width_frac_std").round(3).alias("width_frac_std"),
+    "n_test",
+)
+
+
+# %%
+def label_placements(x: np.ndarray, y: np.ndarray) -> list[tuple[int, int, str]]:
+    """Offset in points and horizontal alignment for each point's label.
+
+    Labels are placed to the right of their marker by default. Where a point sits
+    close to its vertical neighbour in both axes, the two alternate sides instead:
+    stacking them vertically collides once several case studies share a narrow
+    coverage band, and pushing each successive label further up walks the topmost
+    one off the axes.
+    """
+    order = sorted(range(len(y)), key=lambda i: y[i])
+    y_span = float(np.ptp(y)) or 1.0
+    x_span = float(np.ptp(np.log10(x))) or 1.0
+    placements: list[tuple[int, int, str]] = [(8, 4, "left")] * len(y)
+    side = 0
+    for rank, index in enumerate(order):
+        if rank:
+            previous = order[rank - 1]
+            close = abs(y[index] - y[previous]) / y_span < 0.12 and (
+                abs(np.log10(x[index]) - np.log10(x[previous])) / x_span < 0.25
+            )
+            side = 1 - side if close else 0
+        placements[index] = (8, 4, "left") if side == 0 else (-8, 4, "right")
+    return placements
+
+
+# %% [markdown]
+# The complete calibration chart is assembled in one rendering cell. The
+# horizontal reference marks the nominal target, not a performance threshold.
+
+
+# %%
+def plot_conformal_coverage(conformal_df: pl.DataFrame) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(7, 6))
+    emp = conformal_df["empirical_coverage"].to_numpy()
+    width = conformal_df["interval_width_frac_std"].to_numpy()
+    names = conformal_df["short_name"].to_list()
+    gap = np.abs(emp - CONFORMAL_LEVEL)
+    cmap = LinearSegmentedColormap.from_list(
+        "ml4t_calibration_gap", [COLORS["silver_muted"], COLORS["amber"]]
+    )
+    sc = ax.scatter(
+        width,
+        emp,
+        s=90,
+        edgecolor=COLORS["silver"],
+        c=gap,
+        cmap=cmap,
+        vmin=0.0,
+        vmax=max(0.01, float(gap.max())),
+    )
+    for (dx, dy, ha), name, xv, yv in zip(
+        label_placements(width, emp), names, width, emp, strict=True
+    ):
+        ax.annotate(name, (xv, yv), textcoords="offset points", xytext=(dx, dy), ha=ha)
+    ax.axhline(
+        CONFORMAL_LEVEL,
+        color=COLORS["neutral"],
+        linestyle="--",
+        label=f"Nominal {CONFORMAL_LEVEL:.0%}",
+    )
+    ax.set_xscale("log")
+    ax.margins(x=0.25, y=0.12)
+    ax.set_xlabel(
+        "Mean interval width, as a fraction of the outcome standard deviation over the "
+        "same rows (log scale)"
+    )
+    ax.set_ylabel("Empirical coverage")
+    ax.set_title(f"Cross-fitted out-of-fold calibration at the {CONFORMAL_LEVEL:.0%} level")
+    ax.legend(loc="lower right", frameon=False, fontsize=9)
+    fig.colorbar(sc, ax=ax, fraction=0.045, pad=0.04, label="Absolute coverage gap")
+    return fig
+
+
+# %%
+if not conformal_df.is_empty():
+    fig = plot_conformal_coverage(conformal_df)
+    show_with_alt(
+        fig,
+        "A scatter with one labelled point per case study: empirical coverage on the vertical "
+        "axis against mean interval width on the horizontal, on a logarithmic scale, the width "
+        "divided by the standard deviation of the outcomes over the same evaluated rows so that "
+        "case studies trading different return magnitudes stay comparable. A dashed horizontal "
+        "line marks the nominal coverage level, so vertical distance from it is the calibration "
+        "error, and each point is shaded by the absolute size of that error against a colour "
+        "bar.",
+    )
+
+# %%
+if not conformal_df.is_empty():
+    conformal_gap = conformal_df.with_columns(
+        gap=(pl.col("empirical_coverage") - pl.col("nominal_level")).abs()
+    ).sort("gap", descending=True)
+    furthest = conformal_gap.row(0, named=True)
+    nearest = conformal_gap.sort("gap").row(0, named=True)
+    display(
+        Markdown(
+            f"**Computed conformal diagnostic.** The nearest panel to nominal is "
+            f"{nearest['short_name']} ({nearest['empirical_coverage']:.3f}); the furthest is "
+            f"{furthest['short_name']} ({furthest['empirical_coverage']:.3f}). The oldest OOF "
+            "fold supplies calibration state and later OOF folds come from different fits, so "
+            "this diagnostic is not a same-model conformal or operational coverage guarantee."
+        )
+    )
+
+# %% [markdown]
+# ## 5. DL versus Tabular Baselines
+#
+# The DL family enters a contested space - for every case study it is
+# compared to the highest-IC tabular configuration across linear, GBM, and
+# TabM. The selected models are rescored over the exact intersection of their
+# evaluation timestamps. The notebook does not infer uncertainty from a small set of
+# fold summaries.
+
+
+# %%
+def family_rank1_collect(family: str) -> pl.DataFrame:
+    df = collect_rank1_per_cs(
+        CASE_STUDY_IDS,
+        family=family,
+    )
+    if df.is_empty():
+        return pl.DataFrame()
+    return df.select(
+        "case_study",
+        "short_name",
+        "config_name",
+        "prediction_hash",
+        "training_hash",
+        "ic_n_days",
+        pl.col("ic_mean_daily").alias(f"{family}_ic"),
+    )
+
+
+# %% [markdown]
+# Apply the same complete-coverage selector to each tabular family before
+# choosing the strongest point estimate within a case study.
+
+# %%
+linear_rank1 = family_rank1_collect("linear")
+gbm_rank1 = family_rank1_collect("gbm")
+tabm_rank1 = family_rank1_collect("tabular_dl")
+
+# %%
+ic_lookup = {
+    "linear": linear_rank1,
+    "gbm": gbm_rank1,
+    "tabular_dl": tabm_rank1,
+}
+
+
+def dl_tabular_delta(cs: str) -> dict | None:
+    """Compare the selected DL row with the strongest tabular family row."""
+    dl_row = dl_rank1.filter(pl.col("case_study") == cs)
+    if dl_row.is_empty():
+        return None
+    selected_dl = dl_row.row(0, named=True)
+    family_rows = {}
+    for fam in TABULAR_BASELINES:
+        sub = ic_lookup[fam].filter(pl.col("case_study") == cs)
+        if not sub.is_empty():
+            family_rows[fam] = sub.row(0, named=True)
+    if not family_rows:
+        return None
+    best_fam = max(family_rows, key=lambda family: family_rows[family][f"{family}_ic"])
+    best_row = family_rows[best_fam]
+    dl_daily = load_daily_metrics_series(cs, selected_dl["prediction_hash"])
+    baseline_daily = load_daily_metrics_series(cs, best_row["prediction_hash"])
+    if dl_daily.is_empty() or baseline_daily.is_empty():
+        return None
+    matched = compare_ic_on_shared_timestamps(dl_daily, baseline_daily)
+    return {
+        "case_study": cs,
+        "short_name": SHORT_NAMES[cs],
+        "dl_arch": architecture(selected_dl["config_name"]),
+        "dl_ic": matched["left_ic"],
+        "dl_prediction_hash": selected_dl["prediction_hash"],
+        "best_baseline_family": best_fam,
+        "best_baseline_ic": matched["right_ic"],
+        "baseline_prediction_hash": best_row["prediction_hash"],
+        "matched_timestamps": matched["n_timestamps"],
+        "delta": matched["left_ic"] - matched["right_ic"],
+    }
+
+
+# %% [markdown]
+# The comparison selects complete-coverage rows from each family, then
+# computes both point estimates from their shared evaluation timestamps. The
+# table does not estimate uncertainty for the difference between models.
+
+# %%
+delta_rows = [entry for cs in CASE_STUDY_IDS if (entry := dl_tabular_delta(cs)) is not None]
+
+delta_df = pl.DataFrame(delta_rows).sort("delta", descending=True)
+print("DL minus highest-IC full-coverage tabular baseline on shared timestamps (primary label):")
+delta_df.select(
+    "short_name",
+    "dl_arch",
+    "best_baseline_family",
+    pl.col("dl_ic").round(4).alias("dl"),
+    pl.col("best_baseline_ic").round(4).alias("base"),
+    pl.col("delta").round(4),
+    "matched_timestamps",
+    "dl_prediction_hash",
+    "baseline_prediction_hash",
+)
+
+# %% [markdown]
+# ### 5a. DL versus highest-IC tabular baseline - scatter
+#
+# The scatter plots the highest-IC tabular baseline on the x-axis and the
+# highest-IC DL configuration on the y-axis, one point per case study.
+# Points above the diagonal indicate DL exceeds the highest-IC tabular
+# baseline; points below indicate the tabular baseline tops the DL signal.
+# Marker shape identifies the selected tabular family; color shows only the
+# direction of the point-estimate difference.
+
+# %%
+fam_marker = {"linear": "o", "gbm": "s", "tabular_dl": "D"}
+
+
+def add_scatter_points(ax: plt.Axes, delta_df: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    xs = delta_df["best_baseline_ic"].to_numpy()
+    ys = delta_df["dl_ic"].to_numpy()
+    rows = zip(
+        xs,
+        ys,
+        delta_df["short_name"],
+        delta_df["dl_arch"],
+        delta_df["best_baseline_family"],
+        strict=False,
+    )
+    for x, y, name, arch, family in rows:
+        ax.scatter(
+            x,
+            y,
+            s=90,
+            marker=fam_marker[family],
+            facecolor=COLORS["positive"] if y > x else COLORS["negative"],
+            edgecolor=COLORS["blue"],
+            linewidth=1.4,
+        )
+        ax.annotate(f"{name} ({arch})", (x, y), textcoords="offset points", xytext=(8, 4))
+    return xs, ys
+
+
+# %% [markdown]
+# A common scale and equality line make the point-estimate comparison
+# interpretable without implying paired uncertainty.
+
+
+# %%
+def format_scatter_axes(ax: plt.Axes, xs: np.ndarray, ys: np.ndarray) -> None:
+    lo = float(min(np.min(xs), np.min(ys))) - 0.005
+    hi = float(max(np.max(xs), np.max(ys))) + 0.005
+    ax.plot([lo, hi], [lo, hi], color=COLORS["neutral"], linestyle="--")
+    ax.axhline(0, color=COLORS["silver_muted"], linewidth=0.5)
+    ax.axvline(0, color=COLORS["silver_muted"], linewidth=0.5)
+    ax.set_xlabel("Selected tabular baseline IC on shared timestamps")
+    ax.set_ylabel("Selected DL IC on shared timestamps")
+    ax.set_title("DL vs highest-IC tabular baseline on shared timestamps")
+
+
+# %% [markdown]
+# Shape identifies the selected tabular family; fill identifies only the
+# direction of the observed difference.
+
+
+# %%
+def scatter_legend_elements() -> list[Line2D]:
+    family_labels = {"linear": "Linear", "gbm": "GBM", "tabular_dl": "TabM"}
+    elements = [
+        Line2D(
+            [0],
+            [0],
+            marker=marker,
+            color=COLORS["silver"],
+            markerfacecolor=COLORS["silver_muted"],
+            markeredgecolor=COLORS["blue"],
+            markersize=9,
+            label=f"Highest-IC tabular = {family_labels[family]}",
+        )
+        for family, marker in fam_marker.items()
+    ]
+    for color, label in [
+        (COLORS["positive"], "DL point estimate > tabular"),
+        (COLORS["negative"], "DL point estimate < tabular"),
+    ]:
+        elements.append(Line2D([0], [0], marker="o", color=color, label=label))
+    elements.append(Line2D([0], [0], color=COLORS["neutral"], linestyle="--", label="DL = tabular"))
+    return elements
+
+
+# %% [markdown]
+# The figure is created only after all drawing helpers are defined.
+
+# %%
+fig, ax = plt.subplots(figsize=(8.5, 6.5))
+xs, ys = add_scatter_points(ax, delta_df)
+format_scatter_axes(ax, xs, ys)
+ax.legend(handles=scatter_legend_elements(), loc="upper left", frameon=False, fontsize=8)
+show_with_alt(
+    fig,
+    "A scatter with one labelled point per case study: the deep-learning daily IC on the vertical "
+    "axis against the highest-IC tabular family's on the horizontal, on a common scale with a "
+    "dashed diagonal where the two are equal. Each point is filled green above the diagonal and "
+    "red below it, and its marker shape says which tabular family it was compared against. Labels "
+    "give the case study and its deep-learning architecture.",
+)
+
+# %%
+n_above = int((ys > xs).sum())
+print(
+    f"DL > tabular point estimate on {n_above}/{len(ys)} case studies. "
+    "No paired-fold inference is attached to this difference."
+)
+
+# %% [markdown]
+# ### 5b. When does DL help? Diagnostic table
+#
+# The same delta cross-referenced with panel-level features: data frequency,
+# universe size (entities), and the highest-IC tabular family. The rows are
+# sorted by the DL-minus-tabular point-estimate delta, largest first.
+
+# %%
+diagnostic_rows = []
+for r in delta_df.iter_rows(named=True):
+    cs = r["case_study"]
+    meta = DATASET_META.get(cs, {})
+    diagnostic_rows.append(
+        {
+            "short_name": r["short_name"],
+            "frequency": meta.get("frequency"),
+            "entities": meta.get("entities"),
+            "best_tabular": r["best_baseline_family"],
+            "tab_ic": r["best_baseline_ic"],
+            "dl_arch": r["dl_arch"],
+            "dl_ic": r["dl_ic"],
+            "delta": r["delta"],
+            "matched_timestamps": r["matched_timestamps"],
+        }
+    )
+
+diagnostic_df = pl.DataFrame(diagnostic_rows)
+print("DL-help diagnostic table (sorted by point-estimate delta, largest first):")
+diagnostic_df.select(
+    "short_name",
+    "frequency",
+    "entities",
+    "best_tabular",
+    "dl_arch",
+    pl.col("tab_ic").round(4).alias("tab_ic"),
+    pl.col("dl_ic").round(4).alias("dl_ic"),
+    pl.col("delta").round(4).alias("delta"),
+    "matched_timestamps",
+)
+
+# %%
+display(
+    Markdown(
+        f"**Computed baseline comparison.** DL has the higher shared-timestamp point estimate "
+        f"in {n_above} of {delta_df.height} comparable case studies. The table does not test "
+        "whether these differences are statistically distinguishable."
+    )
+)
+
+# %% [markdown]
+# ## 6. Multi-Label Horizon View
+#
+# Only case studies with at least two complete registered regression labels
+# enter the horizon figure. Single-point series are excluded rather than
+# padded.
+
+
+# %%
+def regression_labels(cs: str) -> list[str]:
+    df = load_metrics_from_registry(cs, families=[FAMILY])
+    if df.is_empty():
+        return []
+    return [
+        lbl
+        for lbl in df["label"].unique().to_list()
+        if lbl is not None and (lbl.startswith("fwd_ret_") or lbl == "ret_to_expiry")
+    ]
+
+
+# %% [markdown]
+# Only complete registered labels enter the horizon census and figure, and "complete"
+# is measured against the case study's own fold grid rather than against what the run
+# declared. `us_equities_panel/12_dl_weekly` sets `MAX_FOLDS = 4` and scores four of
+# that case study's sixteen modelling folds on a Friday-resampled panel, so its
+# `fwd_ret_5d` point is a weekly IC over a quarter of the grid. Drawn on this figure it
+# would join the daily `fwd_ret_1d` point on a shared "average daily IC" axis and read
+# as one quantity moving with horizon. A cell whose grid could not be derived is kept,
+# because "not measured" is not "measured and short", and the cell below prints how many
+# of the retained cells that covers.
+#
+# The grid fails to derive for two different reasons, and the printed count does not
+# separate them. On this worktree it is the two intraday case studies, whose fold
+# boundaries carry a time of day that `fold_boundary_date` refuses. The second reason
+# reaches a reader rather than us: `case_studies/*/labels` is gitignored and the release
+# bundle ships `run_log/` alone, so running this chapter from a downloaded bundle derives
+# no grid for any case study. That prints "not derivable" for every retained cell and
+# excludes nothing - including the `us_equities_panel` weekly point this filter exists to
+# exclude. A census reading "17 of 17" means the label surfaces are absent, not that
+# seventeen grids were checked and found underivable.
+
+# %%
+dl_horizon_all = collect_multi_label_per_cs(
+    CASE_STUDY_IDS,
+    family=FAMILY,
+    labels=regression_labels,
+)
+# `!= False` is not the complement of `== False` here: the column is null wherever the
+# grid could not be derived, both comparisons return null on a null, and `filter` drops
+# a null row. Written as a negation this silently removed the five intraday cells as
+# well as the one partial-grid cell, taking the census from 18 to 12.
+if dl_horizon_all.is_empty():
+    partial_grid = dl_horizon_all
+    dl_horizon = dl_horizon_all
+else:
+    partial_grid = dl_horizon_all.filter(pl.col("covers_fold_grid") == False)  # noqa: E712
+    dl_horizon = dl_horizon_all.filter(
+        pl.col("covers_fold_grid").is_null() | pl.col("covers_fold_grid")
+    )
+unmeasured = 0 if dl_horizon.is_empty() else dl_horizon["covers_fold_grid"].null_count()
+print(
+    f"DL multi-label horizon coverage: {dl_horizon.height} (CS, label) cells "
+    f"across {dl_horizon['case_study'].n_unique() if not dl_horizon.is_empty() else 0} case studies."
+)
+# The exclusion below reports only the cells whose grid could be derived. Say how many
+# were never measured, so "none" is never read as "every cell was checked and passed".
+print(f"Fold grid not derivable for {unmeasured} of {dl_horizon.height} retained cells.")
+if partial_grid.is_empty():
+    print("Excluded for scoring part of the fold grid: none")
+else:
+    for row in partial_grid.iter_rows(named=True):
+        print(
+            f"Excluded {row['short_name']}/{row['label']}: "
+            f"{row['n_folds_scored']} of {row['n_folds_canonical']} modelling folds scored"
+        )
+
+multi_horizon_cs = (
+    dl_horizon.group_by("short_name", maintain_order=True)
+    .len()
+    .filter(pl.col("len") >= 2)["short_name"]
+    .to_list()
+)
+if multi_horizon_cs:
+    fig, horizon_ax = plot_multi_label_horizon(
+        dl_horizon,
+        title="Highest-IC DL configuration across regression horizons",
+    )
+    horizon_ax.set_ylabel("Average daily IC (HAC 95 % CI band)")
+    show_with_alt(
+        fig,
+        "A line per case study of daily-pooled IC against forecast horizon in trading days, on a "
+        "logarithmic horizontal axis, each line shaded with its HAC 95 percent band and drawn in "
+        "its own colour, marker and dash pattern. Only case studies with at least two mapped "
+        "horizons appear. A dashed horizontal line marks zero.",
+    )
+else:
+    print(
+        "No case study has ≥2 DL labels - horizon comparison is degenerate at the registry "
+        "snapshot used here."
+    )
+
+# %%
+display(
+    Markdown(
+        f"**Computed horizon coverage.** {len(multi_horizon_cs)} case studies carry at least "
+        f"two DL horizons the census retained ({', '.join(multi_horizon_cs) or 'none'}). "
+        "Retained means the label covered the case study's modelling fold grid, or the grid "
+        "could not be derived for it - not that every one was checked and found complete, "
+        "which the count printed above says it was not. Cross-panel horizon claims remain out "
+        "of scope when the remaining panels have only one trained label."
+    )
+)
+
+# %% [markdown]
+# ## 7. Architectural Patterns
+#
+# The five architectures map to four classes - recurrent (LSTM), MLP-style
+# (NLinear, TSMixer), convolutional (TCN), attention (PatchTST). For each
+# class, we read the highest IC achieved on each case study where the class
+# has at least one trained configuration.
+
+
+# %%
+def architecture_class_rows(cs: str) -> list[dict]:
+    """Return highest-IC complete row for each trained architecture class."""
+    df = dl_grid.filter(pl.col("case_study") == cs)
+    if df.is_empty():
+        return []
+    df = (
+        df.with_columns(
+            architecture=pl.col("config_name").map_elements(architecture, return_dtype=pl.Utf8),
+        )
+        .with_columns(
+            arch_class=pl.col("architecture").replace_strict(ARCH_CLASS, default=None),
+        )
+        .filter(pl.col("ic_mean_daily").is_not_null() & pl.col("arch_class").is_not_null())
+    )
+    if df.is_empty():
+        return []
+    by_class = (
+        df.sort("ic_mean_daily", descending=True)
+        .group_by("arch_class", maintain_order=True)
+        .first()
+        .select("arch_class", "ic_mean_daily", "ic_ci_lo", "ic_ci_hi", "ic_t_hac", "config_name")
+    )
+    return [{"short_name": SHORT_NAMES[cs], **r} for r in by_class.iter_rows(named=True)]
+
+
+# %% [markdown]
+# Missing architecture classes remain absent rather than being imputed.
+
+# %%
+class_rows = [row for cs in CASE_STUDY_IDS for row in architecture_class_rows(cs)]
+class_df = pl.DataFrame(class_rows)
+print("Highest IC per (case study × architecture class):")
+class_df.sort(["short_name", "arch_class"]).select(
+    "short_name",
+    "arch_class",
+    "config_name",
+    pl.col("ic_mean_daily").round(4).alias("ic"),
+    pl.col("ic_t_hac").round(2).alias("t_hac"),
+)
+
+# %%
+arch_classes = ["recurrent", "MLP-style", "convolutional", "attention"]
+class_colors = {
+    "recurrent": COLORS["blue"],
+    "MLP-style": COLORS["amber"],
+    "convolutional": COLORS["copper"],
+    "attention": COLORS["positive"],
+}
+
+cs_order_class = sorted(class_df["short_name"].unique().to_list())
+x = np.arange(len(cs_order_class))
+width = 0.20
+
+
+def add_architecture_bars(ax: plt.Axes) -> None:
+    for i, cls in enumerate(arch_classes):
+        sub = class_df.filter(pl.col("arch_class") == cls)
+        ic, err_lo, err_hi = [], [], []
+        for cs in cs_order_class:
+            row = sub.filter(pl.col("short_name") == cs)
+            if row.height == 0:
+                ic.append(np.nan)
+                err_lo.append(0.0)
+                err_hi.append(0.0)
+            else:
+                r = row.row(0, named=True)
+                ic.append(r["ic_mean_daily"])
+                err_lo.append(r["ic_mean_daily"] - r["ic_ci_lo"])
+                err_hi.append(r["ic_ci_hi"] - r["ic_mean_daily"])
+        ax.bar(
+            x + (i - 1.5) * width,
+            np.array(ic, dtype=float),
+            width=width,
+            yerr=np.vstack([err_lo, err_hi]),
+            capsize=2,
+            color=class_colors[cls],
+            label=cls,
+        )
+
+
+# %% [markdown]
+# The HAC intervals belong to each selected daily IC series; they are not
+# uncertainty estimates for the difference between architecture classes.
+
+# %%
+fig, ax = plt.subplots(figsize=(11, 5))
+add_architecture_bars(ax)
+ax.set_xticks(x)
+ax.set_xticklabels(cs_order_class, rotation=35, ha="right")
+ax.axhline(0, color=COLORS["neutral"], linewidth=0.7, linestyle="--")
+ax.set_ylabel("Average daily IC (HAC 95 % CI)")
+ax.set_title("Highest IC per architectural class per case study")
+ax.legend(frameon=False, fontsize=9, loc="best", ncol=4)
+show_with_alt(
+    fig,
+    "A grouped bar chart with one group per case study and one bar per architectural class - "
+    "recurrent, MLP-style, convolutional and attention - each bar the highest daily IC that class "
+    "reached on that case study, carrying an asymmetric HAC 95 percent error bar. A dashed "
+    "horizontal line marks zero and the legend gives the class colours.",
+)
+
+# %%
+class_top_per_cs = (
+    class_df.sort("ic_mean_daily", descending=True)
+    .group_by("short_name", maintain_order=True)
+    .first()
+    .group_by("arch_class", maintain_order=True)
+    .agg(n_cs_with_highest_ic=pl.col("short_name").len())
+    .sort(["n_cs_with_highest_ic", "arch_class"], descending=[True, False])
+)
+print("Architectural class achieving the highest IC per case study (count):")
+class_top_per_cs
+
+# %%
+class_count_text = ", ".join(
+    f"{row['arch_class']}: {row['n_cs_with_highest_ic']}"
+    for row in class_top_per_cs.iter_rows(named=True)
+)
+display(
+    Markdown(
+        f"**Computed architecture-class counts.** {class_count_text}. These are "
+        "point-estimate counts, not cross-case superiority estimates."
+    )
+)
+
+# %% [markdown]
+# ## Cross-CS Key Takeaways
+#
+# The synthesis below is computed from the selected prediction hashes and their
+# complete fold panels.
+
+# %%
+largest_dl_delta = delta_df.row(0, named=True)
+display(
+    Markdown(
+        "**Key takeaways**\n\n"
+        f"- {dl_rank1.height} case studies have a complete primary-label DL candidate; "
+        f"{len(dl_clear_names)} have HAC intervals that exclude zero.\n"
+        f"- DL has the higher full-coverage point estimate in {n_above} of "
+        f"{delta_df.height} comparisons with the strongest tabular family.\n"
+        f"- The largest DL-minus-tabular point estimate is {largest_dl_delta['short_name']} "
+        f"at {largest_dl_delta['delta']:+.4f}; the comparison remains descriptive without a "
+        "registered daily paired-difference estimator.\n\n"
+        "**Next**: Ch14 adds latent-factor models on panels that satisfy the dimensionality "
+        "gate; Ch15 layers causal effects on top of the predictive stack."
+    )
+)

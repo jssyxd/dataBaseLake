@@ -1,0 +1,714 @@
+"""Guards on what committed notebooks expose to readers.
+
+Five hygiene defects have reached readers from committed ``.ipynb`` files:
+
+* machine-specific absolute paths baked into cell outputs and papermill
+  metadata - ``/home/<user>/...``, and a scratch root under ``/tmp``,
+* an empty ``tags: []`` stamped on every cell by papermill, which desynced the
+  notebook from its jupytext-paired ``.py`` and made JupyterLab refuse to open
+  it (public issue #372), and
+* a plotly figure serialized as a bare ``application/json`` payload with no
+  ``image/png`` (and no ``text/html``) sibling, which GitHub's notebook viewer
+  cannot render: the reader sees a collapsed JSON tree instead of the chart.
+  This happens when a notebook is executed with ``PLOTLY_RENDERER=json`` (the
+  headless/CI recipe) instead of the default ``plotly_mimetype+png`` renderer, and
+* a figure destroyed by the sanitizer above, which deleted a chance ``/app/`` out
+  of a base64 PNG payload and left an encoding that no longer decodes, and
+* a stderr block under a figure saying the notebook overrode the repository's own
+  figure setup - the layout engine ``matplotlibrc`` sets, or the display path
+  ``utils.style`` provides. The reader sees a warning about the repository's
+  plumbing where the figure's caption should be.
+
+Each test scans every tracked ``.ipynb`` and names the script that fixes it.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts"))
+
+from sanitize_notebook_paths import (  # noqa: E402
+    BINARY_MIME,
+    _iter_notebooks,
+    iter_committed_notebooks,
+    sanitize_notebook,
+    sanitize_text,
+)
+from strip_empty_cell_tags import paired_py_has_fossil, strip_text  # noqa: E402
+
+
+def test_strip_empty_cell_tags_handles_a_metadata_only_tag():
+    raw = '{\n "metadata": {\n  "tags": []\n },\n "source": []\n}\n'
+    cleaned, count = strip_text(raw)
+    assert count == 1
+    assert '"tags"' not in cleaned
+
+
+def test_no_machine_specific_paths_in_committed_notebooks() -> None:
+    """Outputs and metadata only. A path in `source` may be load bearing.
+
+    A leak the notebook's source also contains counts too. The sanitizer skips
+    those rather than rewriting them, so leaving them out of this count would
+    let a leak the reader can plainly see sit in a committed output while the
+    gate reported the repository clean - the tool declining to fix something is
+    not the same as there being nothing to fix.
+    """
+    offenders: list[str] = []
+    for nb in iter_committed_notebooks():
+        raw = nb.read_text(encoding="utf-8")
+        _, n, skipped = sanitize_notebook(raw)
+        if n or skipped:
+            note = f"{n}" + (f", {len(skipped)} the sanitizer cannot rewrite" if skipped else "")
+            offenders.append(f"{nb.relative_to(REPO_ROOT)} ({note})")
+    assert not offenders, (
+        "Notebooks leak machine-specific absolute paths in their committed "
+        "outputs/metadata. Run `uv run python .github/scripts/sanitize_notebook_paths.py` "
+        "to fix; a leak it reports as unrewritable has to be removed by hand or by "
+        "re-executing the notebook:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_a_scratch_root_under_tmp_is_rewritten() -> None:
+    """An agent scratchpad and a staging notebook executed from /tmp are both leaks."""
+    scratchpad = (
+        "/tmp/claude-1000/-home-someone-ml4t-agents/"
+        "adaaf42e-c336-4616-bea6-f139792daf17/scratchpad/nb.ipynb"
+    )
+    assert sanitize_text(scratchpad)[0] == "~/scratch/nb.ipynb"
+    assert sanitize_text("/tmp/dpgan_final_out.ipynb")[0] == "~/scratch/dpgan_final_out.ipynb"
+
+
+def test_the_documented_test_output_directory_is_not_rewritten() -> None:
+    """`/tmp/ml4t-test-output` is real configuration, not one machine's layout.
+
+    `AGENTS.md` ("Output isolation") makes tests write there, so a notebook
+    printing it is telling the reader where its output went. Rewriting it would
+    repeat the mistake the raw-text sanitizer made with the `/app` mount path in
+    `02_financial_data_universe/16_provider_comparison`.
+    """
+    for path in (
+        "/tmp/ml4t-test-output/ch04_kalshi/kalshi_features.parquet",
+        "/tmp/ml4t-test-output-ch15/ch15_momentum_causal_trading/artifacts.json",
+    ):
+        assert sanitize_text(path) == (path, 0)
+
+
+def test_an_ipython_cell_path_is_not_rewritten() -> None:
+    """`/tmp/ipykernel_<pid>/<hash>.py` is what IPython calls a cell in any kernel.
+
+    It carries a process id, not a user or a directory layout, and it appears
+    inside tracebacks and warnings where the line number is the point. Rewriting
+    the root would corrupt a location a reader may need to follow.
+    """
+    frame = "/tmp/ipykernel_790523/2252327757.py:76: FutureWarning"
+    assert sanitize_text(frame) == (frame, 0)
+
+
+def test_an_already_rewritten_path_is_not_rewritten_again() -> None:
+    """The `/tmp` rules match a filesystem root, not the segment `tmp` anywhere.
+
+    `~/.claude/jobs/<id>/tmp/run.ipynb` is what the `/home/<user>/` rule leaves
+    behind. An unanchored `/tmp/` rule would splice a second `~` into the middle
+    of it, which is why the rules carry a lookbehind.
+    """
+    nested = "~/.claude/jobs/7c96381e/tmp/dpgan_final_out.ipynb"
+    assert sanitize_text(nested) == (nested, 0)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The absolute spelling, which a fresh render produces.
+        ("/home/stefan/ml4t/public-teach-e/10_text/out.parquet", "10_text/out.parquet"),
+        (
+            "/home/runner/ml4t/public/16_strategy_simulation/fig.png",
+            "16_strategy_simulation/fig.png",
+        ),
+        # The `~/` spelling, which the generic `~/ml4t/` rule has been producing
+        # since worktrees came in and which nothing downstream could see.
+        ("~/ml4t/public-s6-us_equities_panel/out.parquet", "out.parquet"),
+        (
+            "~/ml4t/public/16_strategy_simulation/output/fig.png",
+            "16_strategy_simulation/output/fig.png",
+        ),
+        ("~/ml4t/public-teach-b6/a/b.csv", "a/b.csv"),
+        ("Saved summary to: ~/ml4t/public-gpu-flags/x.parquet", "Saved summary to: x.parquet"),
+    ],
+)
+def test_a_worktree_root_is_rewritten_in_both_spellings(text: str, expected: str) -> None:
+    """A worktree is a repo root, so its paths come out repo-relative.
+
+    The second spelling is the one that matters here. `~/ml4t/public-teach-e/x` is
+    what the generic `/home/[^/]+/ml4t/` rule produced from the first, and neither
+    this module's CI guard nor `nbcheck` could match it - both look for the
+    `/home/` form. So the leak was detectable right up until the tool whose job is
+    to remove it ran, and undetectable afterwards.
+    """
+    assert sanitize_text(text) == (expected, 1)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # `public` has to be a whole path segment. A bare `public[^/]*` eats this.
+        "~/ml4t/publications/paper.pdf",
+        # A sibling of the worktrees, not one of them.
+        "~/ml4t/case_studies/etfs/run_log/registry.db",
+        "~/ml4t/",
+        # No trailing slash, so it is not a path prefix and has nothing to strip.
+        "~/ml4t/public",
+        "the public filings dataset",
+    ],
+)
+def test_a_worktree_rule_does_not_eat_its_neighbours(text: str) -> None:
+    assert sanitize_text(text) == (text, 0)
+
+
+def test_the_sanitizer_reports_a_string_it_cannot_safely_rewrite() -> None:
+    """A leak the source shares is skipped, not rewritten, and it is named.
+
+    The raw-text edit is what keeps the diff to the replaced paths, and it is
+    also what makes a string that appears in both places ambiguous. Skipping is
+    the safe answer; going quiet about it is not.
+    """
+    shared = "/home/someone/ml4t/code/data/prices.parquet"
+    raw = json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": [f'pl.read_parquet("{shared}")'],
+                    "outputs": [{"output_type": "stream", "text": [shared]}],
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    new, replaced, skipped = sanitize_notebook(raw)
+
+    assert skipped == [shared]
+    assert replaced == 0
+    assert new == raw
+
+
+def test_the_sanitizer_leaves_an_image_payload_alone_when_it_encodes_app() -> None:
+    """base64 contains ``/app/`` by chance, and deleting it destroys the figure.
+
+    Built from the payload that was actually damaged: cell 33 of
+    ``case_studies/etfs/05_evaluation`` carried a 244,684-character PNG holding one
+    chance ``/app/``, and removing it left 244,679 characters, which is not a
+    multiple of four and does not decode. Nothing raised - the page simply showed a
+    broken image. The header is a real PNG so the payload is valid before the run,
+    and the padding is chosen to keep the length divisible by four.
+    """
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode()
+    payload = png + "/app/" + "A" * 7
+    assert len(payload) % 4 == 0
+    base64.b64decode(payload, validate=True)
+
+    raw = json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": ["fig.show()"],
+                    "outputs": [
+                        {
+                            "output_type": "display_data",
+                            "data": {"image/png": payload, "text/plain": ["/app/figure.py"]},
+                            "metadata": {},
+                        }
+                    ],
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    new, replaced, skipped = sanitize_notebook(raw)
+
+    assert skipped == []
+    # The text/plain sibling is a genuine container path and is still rewritten.
+    assert replaced == 1
+    rewritten = json.loads(new)["cells"][0]["outputs"][0]["data"]
+    assert rewritten["text/plain"] == ["figure.py"]
+    assert rewritten["image/png"] == payload
+    base64.b64decode(rewritten["image/png"], validate=True)
+
+
+def test_the_sanitizer_leaves_an_image_payload_alone_when_it_encodes_tmp() -> None:
+    """The `/tmp` rules carry the same exposure as the `/app/` one, by the same alphabet.
+
+    `t`, `m` and `p` are as much a part of base64 as `a` and `p` are, and the
+    filesystem-root lookbehind does not help: `+` and `/` are both in the alphabet
+    and both satisfy it. So `/tmp/` occurs inside a long payload by chance exactly
+    as `/app/` does, and rewriting it to `~/scratch/` would corrupt the image just
+    as deleting five characters did. What prevents it is the MIME filter, not the
+    anchor - which is why this is pinned separately rather than assumed from the
+    `/app/` case.
+    """
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode()
+    payload = png + "A+/tmp/dpgan" + "A" * 4
+    assert len(payload) % 4 == 0
+    base64.b64decode(payload, validate=True)
+    # The same string outside a payload is a leak, so the rule does fire on it.
+    assert sanitize_text("/tmp/dpgan")[1] == 1
+
+    raw = json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": ["fig.show()"],
+                    "outputs": [
+                        {
+                            "output_type": "display_data",
+                            "data": {"image/png": payload, "text/plain": ["/tmp/dpgan.ipynb"]},
+                            "metadata": {},
+                        }
+                    ],
+                }
+            ],
+            "metadata": {},
+        }
+    )
+
+    new, replaced, skipped = sanitize_notebook(raw)
+
+    assert skipped == []
+    assert replaced == 1
+    rewritten = json.loads(new)["cells"][0]["outputs"][0]["data"]
+    assert rewritten["text/plain"] == ["~/scratch/dpgan.ipynb"]
+    assert rewritten["image/png"] == payload
+    base64.b64decode(rewritten["image/png"], validate=True)
+
+
+def test_no_committed_notebook_carries_an_image_that_stopped_decoding() -> None:
+    """The damage the rule above caused is detectable, so it is checked for."""
+    broken: list[str] = []
+    for nb in iter_committed_notebooks():
+        parsed = json.loads(nb.read_text(encoding="utf-8"))
+        for index, cell in enumerate(parsed.get("cells", [])):
+            for output in cell.get("outputs", []):
+                for mime, value in (output.get("data") or {}).items():
+                    if mime not in BINARY_MIME:
+                        continue
+                    text = value if isinstance(value, str) else "".join(value)
+                    try:
+                        base64.b64decode(text, validate=True)
+                    except (binascii.Error, ValueError):
+                        broken.append(f"{nb.relative_to(REPO_ROOT)} cell {index} {mime}")
+    assert not broken, (
+        f"{len(broken)} committed image payload(s) no longer decode: {broken[:5]}. "
+        "Re-run the notebook; the payload cannot be repaired in place."
+    )
+
+
+# Debt list for notebooks still carrying the empty-tag fossil. Emptied when the
+# case studies shipped: every entry below was a code-repo artifact that the
+# released notebooks do not carry, so the list cleared rather than shrank one at
+# a time. The list must only ever shrink, which the second test below enforces.
+KNOWN_DESYNCED: frozenset[str] = frozenset()
+
+
+def _empty_tag_offenders() -> dict[str, int]:
+    """{relative path: count} for notebooks whose paired .py lacks the empty tags."""
+    out: dict[str, int] = {}
+    for nb in iter_committed_notebooks():
+        if paired_py_has_fossil(nb):
+            continue  # pair agrees; stripping one side is what would break it
+        _, n = strip_text(nb.read_text(encoding="utf-8"))
+        if n:
+            out[str(nb.relative_to(REPO_ROOT))] = n
+    return out
+
+
+def test_no_empty_cell_tags_in_committed_notebooks() -> None:
+    """Empty `tags: []` desyncs a notebook from its .py, so JupyterLab won't open it."""
+    offenders = [f"{p} ({n})" for p, n in _empty_tag_offenders().items() if p not in KNOWN_DESYNCED]
+    assert not offenders, (
+        "Notebooks carry empty `tags: []` cell metadata their paired .py lacks, so "
+        "JupyterLab shows a 'File Load Error' instead of the notebook (cf. public "
+        "#372). Run `uv run python .github/scripts/strip_empty_cell_tags.py` to fix:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_known_desynced_list_has_no_stale_entries() -> None:
+    """The debt list must only shrink: a fixed notebook has to leave it.
+
+    Entries whose notebook is absent are ignored, not stale: this file is mirrored
+    to the public repo, which ships only a subset of the case studies.
+    """
+    offenders = _empty_tag_offenders()
+    stale = sorted(e for e in KNOWN_DESYNCED - set(offenders) if (REPO_ROOT / e).exists())
+    assert not stale, (
+        "These notebooks are listed in KNOWN_DESYNCED but are now clean. Remove them "
+        "from the list in this file so it cannot silently mask a regression:\n  "
+        + "\n  ".join(stale)
+    )
+
+
+# Notebooks whose committed outputs carry a plotly figure as a bare
+# `application/json` payload with no `image/png`/`text/html` sibling, so GitHub
+# shows a JSON tree instead of the chart. Each was executed under
+# `PLOTLY_RENDERER=json`; the fix is to re-execute in its documented environment
+# with the DEFAULT renderer (`utils.__init__` sets `plotly_mimetype+png`; kaleido
+# is present in every relevant env, including the benchmark image), which emits
+# the `image/png` GitHub needs. The list must only ever shrink, which the
+# companion test below enforces. `_archive/` notebooks are not shipped to readers
+# but are tracked here for consistency with the sibling debt list above.
+KNOWN_UNRENDERABLE = frozenset(
+    {
+        "case_studies/crypto_perps_funding/_archive/11_autoencoder.ipynb",
+    }
+)
+
+
+def _is_plotly_figure_spec(payload: object) -> bool:
+    """A plotly figure serialized to JSON is a dict carrying `data` and `layout`."""
+    return isinstance(payload, dict) and "data" in payload and "layout" in payload
+
+
+def _unrenderable_plotly_offenders() -> dict[str, int]:
+    """{relative path: figure count} for plotly figures GitHub cannot render.
+
+    A figure output is unrenderable if it is a plotly figure (a `data`+`layout`
+    spec under `application/json`, or an `application/vnd.plotly.v1+json` mime)
+    that carries neither an `image/png` nor a `text/html` sibling to fall back on.
+    """
+    out: dict[str, int] = {}
+    for nb_path in iter_committed_notebooks():
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        count = 0
+        for cell in nb.get("cells", []):
+            if cell.get("cell_type") != "code":
+                continue
+            for output in cell.get("outputs", []):
+                data = output.get("data", {})
+                if "image/png" in data or "text/html" in data:
+                    continue
+                is_plotly = "application/vnd.plotly.v1+json" in data or _is_plotly_figure_spec(
+                    data.get("application/json")
+                )
+                if is_plotly:
+                    count += 1
+        if count:
+            out[str(nb_path.relative_to(REPO_ROOT))] = count
+    return out
+
+
+def test_no_unrenderable_plotly_figures_in_committed_notebooks() -> None:
+    """Plotly figures stored as bare `application/json` do not render on GitHub."""
+    offenders = [
+        f"{p} ({n})"
+        for p, n in _unrenderable_plotly_offenders().items()
+        if p not in KNOWN_UNRENDERABLE
+    ]
+    assert not offenders, (
+        "Notebooks commit plotly figures as a bare `application/json` payload with "
+        "no `image/png`, so GitHub renders a JSON tree instead of the chart. Re-execute "
+        "the notebook in its documented environment with the DEFAULT plotly renderer "
+        "(do NOT set `PLOTLY_RENDERER=json`), which emits the `image/png` via kaleido:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_known_unrenderable_list_has_no_stale_entries() -> None:
+    """The debt list must only shrink: a fixed notebook has to leave it.
+
+    Entries whose notebook is absent are ignored, not stale: this file is mirrored
+    to the public repo, which ships only a subset of the case studies.
+    """
+    offenders = _unrenderable_plotly_offenders()
+    stale = sorted(e for e in KNOWN_UNRENDERABLE - set(offenders) if (REPO_ROOT / e).exists())
+    assert not stale, (
+        "These notebooks are listed in KNOWN_UNRENDERABLE but their plotly figures now "
+        "render. Remove them from the list in this file so it cannot silently mask a "
+        "regression:\n  " + "\n  ".join(stale)
+    )
+
+
+# The three things matplotlib says when a notebook fights the repository's own
+# figure setup and loses. Each is house-keeping, not science: none of them tells
+# the reader anything about the data, and each renders as a stderr block under the
+# figure where the caption should be.
+#
+# Deliberately not "no stderr in a render". A ConvergenceWarning, a RuntimeWarning
+# for divide-by-zero, an ARCH interpolation notice - those are the one channel a
+# fitted model has to say it did not converge, and 34 of the 48 notebooks that
+# carry a stderr block carry one of those. A guard that swept them up would push
+# authors back to `warnings.filterwarnings("ignore")`, which is the defect the
+# preamble standard was narrowed to remove.
+HOUSE_FIGURE_WARNINGS = (
+    # `fig.tight_layout()` over the global `figure.constrained_layout.use: True`.
+    "The figure layout has changed to tight",
+    # `fig.subplots_adjust()` under the same setting - warns AND discards the spacing.
+    "incompatible with subplots_adjust",
+    # A bare `fig.show()` instead of `show_with_alt(fig, alt)`.
+    "FigureCanvasAgg is non-interactive",
+)
+
+# Notebooks whose committed outputs already carry one. Each leaves this list when
+# the notebook is next re-executed with the offending call removed - the removal is
+# a code-cell edit, so it costs a run, and it is folded into a run the notebook is
+# already owed rather than scheduled on its own. The list must only ever shrink,
+# which the companion test below enforces.
+KNOWN_HOUSE_FIGURE_WARNINGS = frozenset(
+    {
+        "23_knowledge_graphs/02_supply_chain_kg_construction_qwen25_rerun.ipynb",
+        "23_knowledge_graphs/02_supply_chain_kg_construction_qwen3.ipynb",
+        "23_knowledge_graphs/08_8k_event_extraction_qwen3.ipynb",
+        "case_studies/fx_pairs/19_strategy_analysis.ipynb",
+    }
+)
+
+
+def _house_figure_warning_offenders() -> dict[str, int]:
+    """{relative path: occurrence count} for renders carrying a house figure warning."""
+    out: dict[str, int] = {}
+    for nb_path in iter_committed_notebooks():
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        count = 0
+        for cell in nb.get("cells", []):
+            if cell.get("cell_type") != "code":
+                continue
+            for output in cell.get("outputs", []):
+                if output.get("output_type") != "stream" or output.get("name") != "stderr":
+                    continue
+                text = "".join(output.get("text", []))
+                count += sum(text.count(sign) for sign in HOUSE_FIGURE_WARNINGS)
+        if count:
+            out[str(nb_path.relative_to(REPO_ROOT))] = count
+    return out
+
+
+def test_no_house_figure_warnings_in_committed_notebooks() -> None:
+    """A render must not tell the reader the notebook overrode the house figure setup."""
+    offenders = [
+        f"{p} ({n})"
+        for p, n in _house_figure_warning_offenders().items()
+        if p not in KNOWN_HOUSE_FIGURE_WARNINGS
+    ]
+    assert not offenders, (
+        "These committed renders carry a stderr block from a notebook overriding the "
+        "repository's figure setup. `matplotlibrc` sets the layout engine for every "
+        "figure, so drop the second layout pass (`fig.tight_layout()`, "
+        "`fig.subplots_adjust()`) rather than re-laying the figure out; and display "
+        "with `show_with_alt(fig, alt)` from `utils.style` rather than a bare "
+        "`fig.show()`. Then re-execute:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_known_house_figure_warning_list_has_no_stale_entries() -> None:
+    """The debt list must only shrink: a re-executed notebook has to leave it.
+
+    Entries whose notebook is absent are ignored, not stale: this file is mirrored
+    to the public repo, which ships only a subset of the case studies.
+    """
+    offenders = _house_figure_warning_offenders()
+    stale = sorted(
+        e for e in KNOWN_HOUSE_FIGURE_WARNINGS - set(offenders) if (REPO_ROOT / e).exists()
+    )
+    assert not stale, (
+        "These notebooks are listed in KNOWN_HOUSE_FIGURE_WARNINGS but their renders are "
+        "now clean. Remove them from the list in this file so it cannot silently mask a "
+        "regression:\n  " + "\n  ".join(stale)
+    )
+
+
+def test_a_gitignored_staging_notebook_is_out_of_scope(tmp_path, monkeypatch) -> None:
+    """Papermill's own scratch is not something a reader can ever receive.
+
+    Every execution stages `.<name>.papermill.<pid>.ipynb` beside the notebook and
+    leaves it behind when the run is killed. It is gitignored, and it holds exactly
+    what these guards look for, so scanning it made the gate fail on any working copy
+    that had run a notebook recently while CI, cloning fresh, passed. An untracked
+    notebook that is *not* ignored is on its way to being committed and stays in scope.
+    """
+    import subprocess
+
+    import sanitize_notebook_paths as sut
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("*.papermill.*.ipynb\n", encoding="utf-8")
+    leak = json.dumps({"cells": [], "metadata": {"papermill": {"output_path": "/tmp/x.ipynb"}}})
+    (tmp_path / ".08a_ipca.papermill.579074.ipynb").write_text(leak, encoding="utf-8")
+    (tmp_path / "16_new_notebook.ipynb").write_text(leak, encoding="utf-8")
+
+    monkeypatch.setattr(sut, "REPO_ROOT", tmp_path)
+    found = {p.name for p in sut._iter_notebooks()}
+
+    assert found == {"16_new_notebook.ipynb"}
+
+
+def test_an_untracked_notebook_is_not_committed_content() -> None:
+    """The four gates above say "committed", so an untracked file must not reach them.
+
+    They used to walk the working tree, which meant a scratch or preserved copy in one
+    worktree failed a gate that CI - checking out only what git tracks - could never fail on
+    the same file. The author then sees a failure nobody else can reproduce, on a file the
+    gate has no business reading. Measured 2026-08-25 on `cs6/cme_futures`, where leftovers
+    under `.workspace/preserved/` failed the empty-tag gate while `test-unit` was green on the
+    same commit.
+
+    The fixture is written with `indent=1`, which is nbformat's own layout and the only one
+    that reproduces the defect: every pattern in `strip_empty_cell_tags.PATTERNS` requires a
+    newline after the tag entry, so a one-line `json.dumps` carries the fossil in form and
+    counts zero, and a test built on it would pass whatever the gate's scope was.
+
+    The first assertion is what makes the rest mean something: it fails if the working-tree
+    scan stops seeing the file, and the third fails if the tracked-only restriction is
+    reverted. The fixing script keeps the wider view on purpose - an untracked notebook is
+    exactly the one a user wants sanitized before adding it.
+    """
+    scratch = REPO_ROOT / f".pytest-untracked-notebook-{os.getpid()}"
+    scratch.mkdir(exist_ok=True)
+    notebook = scratch / "untracked.ipynb"
+    notebook.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {"cell_type": "code", "metadata": {"tags": []}, "source": [], "outputs": []}
+                ],
+                "metadata": {},
+                "nbformat": 4,
+                "nbformat_minor": 5,
+            },
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+    try:
+        relative = str(notebook.relative_to(REPO_ROOT))
+        assert strip_text(notebook.read_text(encoding="utf-8"))[1] == 1, (
+            "the fixture must actually carry the fossil, or the assertions below are vacuous"
+        )
+        assert notebook in _iter_notebooks(), "the fixing script must still see it"
+        assert notebook not in iter_committed_notebooks()
+        assert relative not in _empty_tag_offenders()
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_a_runners_transient_notebook_is_not_walked(tmp_path, monkeypatch) -> None:
+    """`nb-run.sh` writes `.<stem>.build.<pid>.ipynb` beside the notebook it runs and deletes it
+    on exit. The sweep must not pick one up: a concurrent run in the same directory deletes it
+    between the walk and the read, which on 2026-09-08 killed the sweep mid-way and left the
+    notebook it was actually running unsanitized while the run still exited 0."""
+    import sanitize_notebook_paths as snp
+
+    chapter = tmp_path / "08_financial_features"
+    chapter.mkdir()
+    real = chapter / "01_price_volume_features.ipynb"
+    real.write_text("{}", encoding="utf-8")
+    for transient in (
+        ".01_price_volume_features.build.1234.ipynb",
+        ".02_microstructure_features.papermill.5678.ipynb",
+    ):
+        (chapter / transient).write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(snp, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(snp, "_ignored_notebooks", lambda: set())
+
+    walked = snp._iter_notebooks()
+
+    assert real in walked
+    assert not [p for p in walked if p.name.startswith(".")]
+
+
+def _top_level_names(source: str) -> set[str]:
+    """Names bound at module level by `source`, or a marker when it will not parse."""
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return {f"<unparseable: {exc}>"}
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+def _dropped_marker_offenders() -> dict[str, list[str]]:
+    """{relative path: names} the paired .py defines and the notebook's code cells do not."""
+    out: dict[str, list[str]] = {}
+    for nb in iter_committed_notebooks():
+        py = nb.with_suffix(".py")
+        if not py.exists():
+            continue
+        py_code = "\n".join(
+            line for line in py.read_text(encoding="utf-8").splitlines() if not line.startswith("#")
+        )
+        cells = json.loads(nb.read_text(encoding="utf-8")).get("cells", [])
+        nb_code = "\n".join(
+            "".join(c.get("source", [])) for c in cells if c.get("cell_type") == "code"
+        )
+        missing = sorted(_top_level_names(py_code) - _top_level_names(nb_code))
+        if missing:
+            out[str(nb.relative_to(REPO_ROOT))] = missing
+    return out
+
+
+def test_no_committed_notebook_lost_a_cell_marker() -> None:
+    """A `# %%` deleted while editing the .py lands the code below it in the markdown cell above.
+
+    Execution catches this on its own - a fresh kernel raises NameError at the first use - so
+    this test is for the two moments execution is not there to catch it. One is editing time,
+    where the alternative is finding out part-way through a run that costs twenty minutes. The
+    other is the path where nothing executes at all: a source-only fix may be committed after
+    `notebook_provenance.py clear`, and a marker lost in that commit reaches main unopposed.
+    Jupytext round-trips the file happily either way, and the .py still parses, so no other
+    check in this repository sees it.
+    """
+    offenders = [f"{p}: {', '.join(names)}" for p, names in _dropped_marker_offenders().items()]
+    assert not offenders, (
+        "These notebooks' code cells do not define names their paired .py does, which is what "
+        "a deleted `# %%` marker looks like - the code is sitting in a markdown cell. Restore "
+        "the marker and re-run `uv run jupytext --to ipynb <nb>.py`:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_dropped_marker_check_sees_a_dropped_marker() -> None:
+    """The no-hit sweep above proves nothing unless the query can produce a hit."""
+    py_source = "# %% [markdown]\n# Some prose.\n\n\ndef helper():\n    return 1\n"
+    markdown_only = {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "source": ["Some prose.\n", "\n", "def helper():\n", "    return 1\n"],
+                "metadata": {},
+            }
+        ]
+    }
+    py_code = "\n".join(line for line in py_source.splitlines() if not line.startswith("#"))
+    nb_code = "\n".join(
+        "".join(c["source"]) for c in markdown_only["cells"] if c["cell_type"] == "code"
+    )
+    assert _top_level_names(py_code) - _top_level_names(nb_code) == {"helper"}
+
+    with_marker = {
+        "cells": [
+            {"cell_type": "markdown", "source": ["Some prose.\n"], "metadata": {}},
+            {"cell_type": "code", "source": ["def helper():\n", "    return 1\n"], "metadata": {}},
+        ]
+    }
+    nb_code = "\n".join(
+        "".join(c["source"]) for c in with_marker["cells"] if c["cell_type"] == "code"
+    )
+    assert not _top_level_names(py_code) - _top_level_names(nb_code)
