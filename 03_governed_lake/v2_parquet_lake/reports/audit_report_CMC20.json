@@ -1,0 +1,23 @@
+{
+  "timestamp_utc": "2026-10-14T01:50:00.000000+00:00",
+  "asset": "CMC20",
+  "timeframes": ["15m", "30m", "1h", "2h", "4h", "1d"],
+  "historical_range": "2024-01-01T00:00:00Z to 2026-10-13T17:30:00Z",
+  "total_bars_15m": 97604,
+  "verdict": "PASS",
+  "invariants_checked": {
+    "monotonicity": "PASS",
+    "deduplication": "PASS",
+    "kline_geometry": "PASS",
+    "positive_prices": "PASS",
+    "non_negative_weights_and_units": "PASS",
+    "discrete_signals": "PASS"
+  },
+  "natural_gaps_count": 3,
+  "natural_gaps_details": [
+    "2025-10-26 00:30 to 01:00 UTC (delta: 30m)",
+    "2026-01-01 15:45 to 16:15 UTC (delta: 30m)",
+    "2026-03-08 14:45 to 15:15 UTC (delta: 30m)"
+  ],
+  "governance_policy": "Zero synthetic forward-fill (preserved native source hiatus)"
+}

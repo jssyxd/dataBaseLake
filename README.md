@@ -41,14 +41,14 @@ dataBaseLake/
 │   └── scripts/                  # 官方并发下载器与断点续传脚本
 │
 ├── 02_pipeline_engine/           # 【L2 数据工程与治理管线】清洗、转换、对齐与审计工具链 (~235 MB)
-│   └── nautilus_crypto_pipeline/
-│       ├── scripts/              # 73 个核心处理脚本（包含 DuckDB 聚合、ClickHouse 迁移同步、Bybit/Binance 审计）
-│       ├── catalog/              # NautilusTrader ParquetDataCatalog 本地生成工作区
+│   ├── nautilus_crypto_pipeline/ # NautilusTrader 加密高频清洗工程与生成工作区
+│   └── cmc_indices_pipeline/     # CMC 官方基准指数管线（离线 OHLC 重采样、多因子信号计算与不变量质检）
+│       ├── scripts/              # cmc_pipeline_engine.py
 │       └── validation_reports/   # 连续性与质量审计证明链
-│
 └── 03_governed_lake/             # 【L3 生产级已治理回测消费湖】高保真、零拷贝 Parquet 数据集 (~2.1 GB)
     ├── v2_parquet_lake/          # 遵循严格 JSON Schema Draft 2020-12 的 Parquet 湖 (Zstd-7)
     │   ├── crypto/               # 30 个主流币种永续合约标准化分片 (15m, 1h, 4h, 1d)
+    │   ├── crypto_indices/       # CMC20 蓝筹指数全周期标准化分片与信号矩阵 (15m, 30m, 1h, 2h, 4h, 1d)
     │   ├── global_futures/       # 原油 CL、黄金 GC、美债 ZN、德指 FDAX、恒指 HSI、日经 NK225
     │   ├── us_equities/          # QQQ, SPY, TQQQ (1m, 15m, 1h, 4h, 1d)
     │   ├── us_futures/           # 标普 ES, 纳指 NQ
@@ -105,7 +105,7 @@ python bootstrap_lake.py --dataset hf_twelvedata_fwm --no-mirror
 | `cdd_all_exchanges` | 7大交易所历史 K 线 | ~4.4 GB | [CryptoDataDownload 官方数据站](https://www.cryptodatadownload.com/data/) | `python bootstrap_lake.py --dataset cdd_all_exchanges` |
 | `gh_getdata_finance` | 美股/外汇/指数高精 K 线 | ~3.0 GB | [GitHub getdata-finance](https://github.com/getdata-finance) | `python bootstrap_lake.py --dataset gh_getdata_finance` |
 | `kaggle_quandl_wiki` | Quandl 3000+ 美股完整日线 | ~1.7 GB | [Kaggle quandl/wiki-prices-us-equities](https://www.kaggle.com/datasets/quandl/wiki-prices-us-equities) | `python bootstrap_lake.py --dataset kaggle_quandl_wiki` |
-
+| `cmc_crypto_index_cmc20` | CMC20 加密旗舰大盘指数 (15m 全量+20成分股) | ~0.16 GB | [CoinMarketCap Keyless API](https://coinmarketcap.com/api/documentation/pro-api-reference/keyless-public-api/) | `python bootstrap_lake.py --dataset cmc_crypto_index_cmc20` |
 ---
 
 ## 4. 数据治理契约与五大数学不变量 (Governance Rules)
@@ -134,9 +134,8 @@ python incremental_update.py --audit
 # 增量检查与同步元数据注册表
 python incremental_update.py --sync-manifest
 
-# 针对指定标的执行增量拉取与质量质检
-python incremental_update.py --symbols BTCUSDT ETHUSDT QQQ SPY
-```
+# 针对指定标的执行增量拉取与质量质检（支持 CMC20 指数全套增量）
+python incremental_update.py --symbols BTCUSDT ETHUSDT QQQ SPY CMC20
 
 ---
 

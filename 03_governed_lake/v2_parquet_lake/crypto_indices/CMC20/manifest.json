@@ -1,0 +1,94 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jssyxd/dataBaseLake/main/03_governed_lake/v2_parquet_lake/manifest/manifest.schema.json",
+  "database_name": "CoinMarketCap CMC20 Index Governed Quantitative Lake",
+  "version": "1.0.0",
+  "last_updated_utc": "2026-10-13T17:41:37.006640+00:00",
+  "data_lineage": {
+    "source": "CoinMarketCap Keyless Public API",
+    "endpoint": "https://pro-api.coinmarketcap.com/public-api/v3/index/cmc20-historical",
+    "historical_range": "2024-01-01T00:00:00+00:00 to 2026-10-13T17:30:00+00:00 (2026-10-14 01:30:00 UTC+8)",
+    "granularity_base": "15m",
+    "resampled_granularities": [
+      "30m",
+      "1h",
+      "2h",
+      "4h",
+      "1d"
+    ]
+  },
+  "storage_specification": {
+    "primary_format": "parquet",
+    "compression": "snappy",
+    "encoding": "pyarrow",
+    "query_engine_compatibility": [
+      "Polars",
+      "DuckDB",
+      "PyArrow",
+      "Pandas"
+    ]
+  },
+  "governance_audit_summary": {
+    "status": "PASSED_100%",
+    "invariants_verified": [
+      "1. Timestamp Monotonicity: ts[i] > ts[i-1] strictly ascending (UTC)",
+      "2. Deduplication: 0 duplicate timestamps across all files",
+      "3. K-line Geometric Invariant: High >= max(Open, Close) and Low <= min(Open, Close)",
+      "4. Positive Price Invariant: All prices and index values > 0",
+      "5. Non-negative Volume & Units Invariant: weights >= 0, units >= 0",
+      "6. Anti-Lookahead Guarantee: Clean left/right alignment, no future leak",
+      "7. Discrete Signal Contract: signal_ensemble, ema, macd, rsi, bb, breadth strictly in {-1, 0, 1}"
+    ],
+    "continuity_defects": [
+      {
+        "type": "NATURAL_SOURCE_GAP",
+        "description": "3 single-bar omissions from CoinMarketCap original index engine (2025-10-26 00:45, 2026-01-01 16:00, 2026-03-08 15:00 UTC)",
+        "policy": "dataBaseLake Zero-Synthetic-Interpolation: Preserved real market absence without forward-fill fabrication"
+      }
+    ]
+  },
+  "catalog": {
+    "cmc20_15m_base": {
+      "file": "cmc20_15m_2024-01-01_now.parquet",
+      "rows": 97594,
+      "columns": 110,
+      "time_range": "2024-01-01T00:00:00+00:00 to 2026-10-13T15:00:00+00:00",
+      "description": "Raw governed 15m CMC20 index values and constituent weights, units, and USD prices"
+    },
+    "cmc20_15m_signals": {
+      "file": "cmc20_15m_signals.parquet",
+      "rows": 97594,
+      "columns": 124,
+      "description": "15m index OHLC + 20 constituent metrics + technical and breadth ensemble signals"
+    },
+    "cmc20_30m_signals": {
+      "file": "cmc20_30m_signals.parquet",
+      "rows": 48799,
+      "columns": 39,
+      "description": "30m resampled OHLC bars and ensemble signals"
+    },
+    "cmc20_1h_signals": {
+      "file": "cmc20_1h_signals.parquet",
+      "rows": 24400,
+      "columns": 39,
+      "description": "1h resampled OHLC bars and ensemble signals"
+    },
+    "cmc20_2h_signals": {
+      "file": "cmc20_2h_signals.parquet",
+      "rows": 12200,
+      "columns": 39,
+      "description": "2h resampled OHLC bars and ensemble signals"
+    },
+    "cmc20_4h_signals": {
+      "file": "cmc20_4h_signals.parquet",
+      "rows": 6100,
+      "columns": 39,
+      "description": "4h resampled OHLC bars and ensemble signals"
+    },
+    "cmc20_1d_signals": {
+      "file": "cmc20_1d_signals.parquet",
+      "rows": 1017,
+      "columns": 39,
+      "description": "Daily resampled OHLC bars and ensemble signals"
+    }
+  }
+}

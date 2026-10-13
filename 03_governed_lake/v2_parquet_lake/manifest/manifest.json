@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "database_name": "Centralized Multi-Asset Quant Backtest Lake",
   "version": "2.1.0",
-  "last_updated_utc": "2026-10-01T18:13:22.546445+00:00",
+  "last_updated_utc": "2026-10-14T02:00:00.000000+00:00",
   "storage_specification": {
     "primary_format": "parquet",
     "compression": "zstd",
@@ -475,7 +475,37 @@
           }
         }
       }
+    },
+    "crypto_indices": {
+      "market": "CoinMarketCap Official Indices",
+      "symbols_count": 1,
+      "symbols": {
+        "CMC20": {
+          "name": "CoinMarketCap Top 20 Cryptocurrencies Index",
+          "path": "crypto_indices/CMC20/",
+          "base_interval": "15m",
+          "timeframes": [
+            "15m",
+            "30m",
+            "1h",
+            "2h",
+            "4h",
+            "1d"
+          ],
+          "constituents_count": 20,
+          "source": "CoinMarketCap Keyless Public API",
+          "start_date": "2024-01-01",
+          "features": [
+            "OHLC",
+            "20_constituents_weights",
+            "usd_prices",
+            "units",
+            "multi_factor_signals",
+            "market_breadth_thrust"
+          ]
+        }
+      }
     }
   },
-  "last_updated": "2026-10-12T13:25:44.850904+00:00"
+  "last_updated": "2026-10-13T18:17:13.927960+00:00"
 }

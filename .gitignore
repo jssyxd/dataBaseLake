@@ -60,8 +60,9 @@ Thumbs.db
 03_governed_lake/v2_parquet_lake/global_futures/**
 03_governed_lake/v2_parquet_lake/us_equities/**
 03_governed_lake/v2_parquet_lake/us_futures/**
-02_pipeline_engine/nautilus_crypto_pipeline/catalog/data/**
-02_pipeline_engine/nautilus_crypto_pipeline/releases_dist/**
+03_governed_lake/v2_parquet_lake/crypto_indices/**/*.parquet
+03_governed_lake/v2_parquet_lake/crypto_indices/**/*.csv.gz
+03_governed_lake/v2_parquet_lake/crypto_indices/**/*.bin.zst
 
 # Keep Directory Skeletons
 !.gitkeep

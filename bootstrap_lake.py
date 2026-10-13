@@ -134,6 +134,15 @@ def restore_dataset(ds, use_mirror=True):
         print(f"Kaggle dataset: {ds.get('kaggle_dataset')}")
         print("Run: kaggle datasets download -d " + ds.get("kaggle_dataset") + f" -p {target_dir} --unzip")
         return True
+    elif "cmc20" in ds_id or "cmc" in ds_id:
+        script_path = BASE_DIR / "01_raw_lake" / "scripts" / "download_cmc20_index.py"
+        if script_path.exists():
+            print(f"\n>>> [CoinMarketCap Index] Executing {script_path} -> {target_dir}")
+            res = subprocess.run([sys.executable, str(script_path), "--output-dir", str(target_dir)])
+            return res.returncode == 0
+        else:
+            print(f"[ERROR] Script {script_path} not found.")
+            return False
     else:
         print(f"[WARN] Unknown source type {stype} for dataset {ds_id}")
         return False

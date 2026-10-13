@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated_at": "2026-10-12",
+  "updated_at": "2026-10-14",
   "description": "Centralized Data Source Registry & Download Mirrors for dataBaseLake",
   "mirrors": {
     "huggingface_global": "https://huggingface.co",
@@ -107,6 +107,17 @@
       "description": "Quandl WIKI 3,000+ US equities full daily history adjusted prices",
       "format": "csv",
       "restore_command": "python bootstrap_lake.py --dataset kaggle_quandl_wiki"
+    },
+    {
+      "id": "cmc_crypto_index_cmc20",
+      "tier": "01_raw_lake",
+      "local_target_dir": "01_raw_lake/cmc_indices/CMC20",
+      "source_type": "api",
+      "url": "https://pro-api.coinmarketcap.com/public-api/v3/index/cmc20-historical",
+      "size_approx_gb": 0.16,
+      "description": "CoinMarketCap Official CMC20 Benchmark Index 15m full history (2024-2026) with 20 constituents breakdown",
+      "format": "parquet / csv",
+      "restore_command": "python bootstrap_lake.py --dataset cmc_crypto_index_cmc20"
     }
   ]
 }
