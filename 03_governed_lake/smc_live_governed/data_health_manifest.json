@@ -1,0 +1,47 @@
+{
+  "created_at_utc": "2026-10-17T18:07:44.746472+00:00",
+  "governance_status": "PASS",
+  "datasets": {
+    "decisions_15m": {
+      "rows": 1288,
+      "symbols": [
+        "BNB-USDT-SWAP",
+        "BTC-USDT-SWAP",
+        "ETH-USDT-SWAP",
+        "SOL-USDT-SWAP"
+      ],
+      "start_utc": "2026-10-05 09:30:00+00:00",
+      "end_utc": "2026-10-08 17:45:00+00:00",
+      "invariants": {
+        "monotonic_increasing": true,
+        "no_duplicates": true,
+        "positive_close": true
+      }
+    },
+    "demo_trades": {
+      "rows": 266,
+      "symbols": [
+        "BNB-USDT-SWAP",
+        "BTC-USDT-SWAP",
+        "ETH-USDT-SWAP",
+        "SOL-USDT-SWAP"
+      ],
+      "start_utc": "2026-10-02 04:30:01.217972244+00:00",
+      "end_utc": "2026-10-15 07:00:27.681054027+00:00",
+      "total_pnl_usdt": 11372.05
+    },
+    "main_fills": {
+      "rows": 125,
+      "symbols": [
+        "BNB-USDT-SWAP",
+        "BTC-USDT-SWAP",
+        "ETH-USDT-SWAP",
+        "SOL-USDT-SWAP",
+        "UNITREE-USDT-SWAP"
+      ],
+      "start_utc": "2026-10-05 05:08:57+00:00",
+      "end_utc": "2026-10-08 17:30:01+00:00",
+      "total_fill_pnl": 79.299
+    }
+  }
+}
