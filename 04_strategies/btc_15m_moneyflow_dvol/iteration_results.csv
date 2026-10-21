@@ -1,0 +1,7 @@
+Strategy / Variation,CAGR (%),Total Ret (%),Max DD (%),Calmar,Sharpe,Trades
+24h Ch + 5d Trend + CVD (No DVOL),-9.95,-25.37,-45.49,0.22,-0.54,760
+24h Ch + 5d Trend + CVD (DVOL < 75%),-7.84,-20.37,-44.52,0.18,-0.41,686
+48h Ch + 10d Trend + CVD (No DVOL),-0.63,-1.75,-29.76,0.02,0.04,432
+48h Ch + 10d Trend + CVD (DVOL < 75%),0.55,1.55,-29.76,0.02,0.12,382
+72h Ch + 15d Trend + CVD (No DVOL),-0.9,-2.49,-37.2,0.02,0.02,308
+72h Ch + 15d Trend + CVD (DVOL < 70%),-0.59,-1.64,-37.2,0.02,0.04,254

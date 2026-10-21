@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 env/
 venv/
+*.egg-info/
 .pytest_cache/
 .coverage
 htmlcov/
@@ -19,13 +20,15 @@ htmlcov/
 *.lock
 !uv.lock
 
-# Operating System & IDE
+# Operating System, Agent & IDE
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 .vscode/
 .idea/
+.omo/
+.pi/
 
 # Large Binary & Compressed Files (Auto-restored via bootstrap_lake.py)
 *.parquet
@@ -61,8 +64,10 @@ Thumbs.db
 03_governed_lake/v2_parquet_lake/us_equities/**
 03_governed_lake/v2_parquet_lake/us_futures/**
 03_governed_lake/v2_parquet_lake/crypto_indices/**/*.parquet
+03_governed_lake/v2_parquet_lake/crypto_indices/**/*.csv
 03_governed_lake/v2_parquet_lake/crypto_indices/**/*.csv.gz
 03_governed_lake/v2_parquet_lake/crypto_indices/**/*.bin.zst
+!03_governed_lake/v2_parquet_lake/crypto_indices/**/cmc20_signals_latest_summary.csv
 
 # Keep Directory Skeletons
 !.gitkeep

@@ -164,6 +164,11 @@ def main():
     elif args.audit or not any([args.audit, args.sync_manifest, args.symbols]):
         run_governance_audit()
         update_manifest()
+    elif args.symbols:
+        from scripts.multi_asset_incremental_updater import run_pipeline
+        timeframes = ["15m"]
+        run_pipeline(args.symbols, timeframes)
+        run_governance_audit()
     elif args.sync_manifest:
         update_manifest()
 

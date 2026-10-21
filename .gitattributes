@@ -1,0 +1,14 @@
+# Auto-detect text files and normalize line endings to LF
+* text=auto eol=lf
+
+# Explicit binary formats
+*.parquet binary
+*.gz binary
+*.zip binary
+*.zst binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.db binary
+*.ico binary

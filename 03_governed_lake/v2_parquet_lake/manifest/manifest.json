@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "database_name": "Centralized Multi-Asset Quant Backtest Lake",
   "version": "2.1.0",
-  "last_updated_utc": "2026-10-14T02:00:00.000000+00:00",
+  "last_updated_utc": "2026-10-20T16:55:18.704639+00:00",
   "storage_specification": {
     "primary_format": "parquet",
     "compression": "zstd",
@@ -23,8 +23,10 @@
     "lookahead_bias_guarantee": true,
     "supported_timeframes": [
       "1m",
+      "5m",
       "15m",
       "1h",
+      "2h",
       "4h",
       "1d"
     ],
@@ -79,7 +81,7 @@
   "catalog": {
     "crypto_perpetuals": {
       "market": "Binance USDT-Margined Futures (UM)",
-      "symbols_count": 24,
+      "symbols_count": 25,
       "established_threshold": "Listed >= 1 year as of 2026-10-02",
       "timeframes": [
         "1m",
@@ -93,8 +95,10 @@
           "path": "crypto/futures_um/BTCUSDT/",
           "timeframes": [
             "1m",
+            "5m",
             "15m",
             "1h",
+            "2h",
             "4h",
             "1d"
           ]
@@ -173,8 +177,10 @@
           "path": "crypto/futures_um/DOGEUSDT/",
           "timeframes": [
             "1m",
+            "5m",
             "15m",
             "1h",
+            "2h",
             "4h",
             "1d"
           ]
@@ -328,6 +334,13 @@
             "4h",
             "1d"
           ]
+        },
+        "XAGUSDT": {
+          "path": "crypto/futures_um/XAGUSDT/",
+          "timeframes": [
+            "1m",
+            "15m"
+          ]
         }
       }
     },
@@ -372,15 +385,17 @@
     },
     "us_futures": {
       "market": "CME Equity Index Continuous Futures",
-      "symbols_count": 2,
+      "symbols_count": 4,
       "symbols": {
         "ES": {
           "name": "E-mini S&P 500 Continuous Futures",
           "path": "us_futures/ES/",
           "timeframes": [
             "1m",
+            "5m",
             "15m",
             "1h",
+            "2h",
             "4h",
             "1d"
           ]
@@ -390,10 +405,32 @@
           "path": "us_futures/NQ/",
           "timeframes": [
             "1m",
+            "5m",
             "15m",
             "1h",
+            "2h",
             "4h",
             "1d"
+          ]
+        },
+        "MBT": {
+          "name": "Micro Bitcoin Futures (CME)",
+          "path": "us_futures/MBT/",
+          "timeframes": [
+            "5m",
+            "15m",
+            "1h",
+            "2h"
+          ]
+        },
+        "MET": {
+          "name": "Micro Ether Futures (CME)",
+          "path": "us_futures/MET/",
+          "timeframes": [
+            "5m",
+            "15m",
+            "1h",
+            "2h"
           ]
         }
       }
@@ -445,8 +482,10 @@
             "path": "global_futures/commodities_and_rates/CL/",
             "timeframes": [
               "1m",
+              "5m",
               "15m",
               "1h",
+              "2h",
               "4h",
               "1d"
             ]
@@ -456,8 +495,10 @@
             "path": "global_futures/commodities_and_rates/GC/",
             "timeframes": [
               "1m",
+              "5m",
               "15m",
               "1h",
+              "2h",
               "4h",
               "1d"
             ]
@@ -507,5 +548,5 @@
       }
     }
   },
-  "last_updated": "2026-10-13T18:17:13.927960+00:00"
+  "last_updated": "2026-10-20T16:58:22.078368+00:00"
 }
